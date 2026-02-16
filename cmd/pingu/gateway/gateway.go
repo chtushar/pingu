@@ -59,6 +59,7 @@ var Cmd = &cobra.Command{
 		registry := agent.NewRegistry()
 		registry.Register(&tools.Message{})
 		registry.Register(&tools.Shell{})
+		registry.Register(&tools.File{})
 
 		runner := agent.NewSimpleRunner(provider, store, registry)
 

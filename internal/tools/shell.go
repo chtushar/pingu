@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-const maxOutputBytes = 10_000
-
 type Shell struct{}
 
 func (s *Shell) Name() string        { return "shell" }
@@ -66,9 +64,3 @@ func (s *Shell) Execute(ctx context.Context, input string) (string, error) {
 	return output, nil
 }
 
-func truncate(b []byte) string {
-	if len(b) > maxOutputBytes {
-		return string(b[:maxOutputBytes]) + "\n... (truncated)"
-	}
-	return string(b)
-}
