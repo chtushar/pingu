@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"time"
 )
@@ -46,6 +47,8 @@ func (s *Shell) Execute(ctx context.Context, input string) (string, error) {
 		timeout = 30 * time.Second
 	}
 
+	slog.Debug("shell: executing", "command", args.Command, "timeout", timeout)
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -56,11 +59,13 @@ func (s *Shell) Execute(ctx context.Context, input string) (string, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
+			slog.Debug("shell: non-zero exit", "code", exitErr.ExitCode(), "output_len", len(output))
 			return fmt.Sprintf("%s\nexit code: %d", output, exitErr.ExitCode()), nil
 		}
 		return "", fmt.Errorf("running command: %w", err)
 	}
 
+	slog.Debug("shell: done", "output_len", len(output))
 	return output, nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"pingu/internal/agent"
 )
@@ -40,9 +41,12 @@ func (m *Message) Execute(ctx context.Context, input string) (string, error) {
 		return "", fmt.Errorf("parsing message input: %w", err)
 	}
 
+	slog.Debug("message: sending", "text_len", len(args.Text))
+
 	if m.emit != nil {
 		m.emit(agent.Event{Type: agent.EventToken, Data: args.Text})
 	}
 
+	slog.Debug("message: sent")
 	return "message sent", nil
 }

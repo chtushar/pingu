@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -48,13 +49,16 @@ func (f *File) Execute(ctx context.Context, input string) (string, error) {
 
 	switch args.Action {
 	case "read":
+		slog.Debug("file: reading", "path", args.Path)
 		data, err := os.ReadFile(args.Path)
 		if err != nil {
 			return "", fmt.Errorf("reading file: %w", err)
 		}
+		slog.Debug("file: read done", "path", args.Path, "bytes", len(data))
 		return truncate(data), nil
 
 	case "write":
+		slog.Debug("file: writing", "path", args.Path, "bytes", len(args.Content))
 		if err := os.MkdirAll(filepath.Dir(args.Path), 0755); err != nil {
 			return "", fmt.Errorf("creating parent dirs: %w", err)
 		}
@@ -62,6 +66,7 @@ func (f *File) Execute(ctx context.Context, input string) (string, error) {
 		if err := os.WriteFile(args.Path, content, 0644); err != nil {
 			return "", fmt.Errorf("writing file: %w", err)
 		}
+		slog.Debug("file: write done", "path", args.Path)
 		return fmt.Sprintf("wrote %d bytes to %s", len(content), args.Path), nil
 
 	default:
