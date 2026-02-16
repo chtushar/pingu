@@ -8,7 +8,9 @@ import (
 	"pingu/internal/agent"
 	"pingu/internal/channels"
 	"pingu/internal/config"
+	"pingu/internal/db"
 	gw "pingu/internal/gateway"
+	"pingu/internal/history"
 	"pingu/internal/llm"
 	"strconv"
 	"strings"
@@ -35,12 +37,24 @@ var Cmd = &cobra.Command{
 			cfg.Gateway.Addr = addr
 		}
 
+		database, err := db.Open(cfg.DB.Path)
+		if err != nil {
+			return fmt.Errorf("opening database: %w", err)
+		}
+		defer database.Close()
+
+		if err := database.Migrate(); err != nil {
+			return fmt.Errorf("migrating database: %w", err)
+		}
+
+		store := history.NewStore(database)
+
 		llmCfg, ok := cfg.LLMs[cfg.DefaultLLM]
 		if !ok {
 			return fmt.Errorf("default LLM %q not found in config", cfg.DefaultLLM)
 		}
 		provider := llm.NewOpenAI(llmCfg.BaseURL, llmCfg.APIKey, llmCfg.Model)
-		runner := agent.NewSimpleRunner(provider)
+		runner := agent.NewSimpleRunner(provider, store)
 
 		chs := buildChannels(cfg, runner)
 

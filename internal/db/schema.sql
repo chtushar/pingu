@@ -26,3 +26,14 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_tool_call ON messages(tool_call_id);
+
+CREATE TABLE IF NOT EXISTS turns (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    user_message  TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    model         TEXT,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, created_at);
