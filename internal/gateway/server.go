@@ -1,14 +1,16 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"pingu/internal/agent"
 	"pingu/internal/channels"
 )
 
 type Server struct {
-	runner agent.Runner
-	mux    *http.ServeMux
+	runner   agent.Runner
+	mux      *http.ServeMux
+	httpSrv  *http.Server
 }
 
 func NewServer(runner agent.Runner, chs ...channels.Channel) *Server {
@@ -31,6 +33,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 }
 
-func (s *Server) ListenAndServe(addr string) error {
-	return http.ListenAndServe(addr, s.mux)
+func (s *Server) ListenAndServe(ctx context.Context, addr string) error {
+	s.httpSrv = &http.Server{Addr: addr, Handler: s.mux}
+
+	go func() {
+		<-ctx.Done()
+		s.httpSrv.Shutdown(context.Background())
+	}()
+
+	err := s.httpSrv.ListenAndServe()
+	if err == http.ErrServerClosed {
+		return nil
+	}
+	return err
 }

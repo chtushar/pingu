@@ -2,26 +2,30 @@ package channels
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"pingu/internal/agent"
+	"time"
 )
 
 const (
-	telegramAPIBase    = "https://api.telegram.org/bot%s"
+	telegramAPIBase      = "https://api.telegram.org/bot%s"
 	telegramSendMsg      = "/sendMessage"
 	telegramChatAction   = "/sendChatAction"
-	telegramSetWebhook   = "/setWebhook"
+	telegramGetUpdates   = "/getUpdates"
 	telegramGetMe        = "/getMe"
 	telegramActionTyping = "typing"
+	telegramPollTimeout  = 30 // seconds, Telegram long poll timeout
 )
 
 type Telegram struct {
 	botToken string
 	runner   agent.Runner
 	apiURL   string
+	offset   int64
 }
 
 func NewTelegram(botToken string, runner agent.Runner) *Telegram {
@@ -34,12 +38,32 @@ func NewTelegram(botToken string, runner agent.Runner) *Telegram {
 
 func (t *Telegram) Name() string { return "telegram" }
 
-func (t *Telegram) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("POST /webhook/telegram", t.handleWebhook)
+func (t *Telegram) RegisterRoutes(mux *http.ServeMux) {}
+
+func (t *Telegram) Start(ctx context.Context) error {
+	slog.Info("telegram: starting long poll")
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			updates, err := t.getUpdates(ctx)
+			if err != nil {
+				slog.Error("telegram: poll failed", "error", err)
+				time.Sleep(time.Second)
+				continue
+			}
+			for _, u := range updates {
+				t.offset = u.UpdateID + 1
+				t.handleUpdate(u)
+			}
+		}
+	}
 }
 
 type telegramUpdate struct {
-	Message *telegramMessage `json:"message"`
+	UpdateID int64            `json:"update_id"`
+	Message  *telegramMessage `json:"message"`
 }
 
 type telegramMessage struct {
@@ -56,16 +80,42 @@ type telegramSendRequest struct {
 	Text   string `json:"text"`
 }
 
-func (t *Telegram) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	var update telegramUpdate
-	if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
-		slog.Error("telegram: failed to decode update", "error", err)
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
+type telegramGetUpdatesResponse struct {
+	OK     bool             `json:"ok"`
+	Result []telegramUpdate `json:"result"`
+}
 
+func (t *Telegram) getUpdates(ctx context.Context) ([]telegramUpdate, error) {
+	body, _ := json.Marshal(map[string]any{
+		"offset":  t.offset,
+		"timeout": telegramPollTimeout,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.apiURL+telegramGetUpdates, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: time.Duration(telegramPollTimeout+5) * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result telegramGetUpdatesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if !result.OK {
+		return nil, fmt.Errorf("telegram API returned ok=false")
+	}
+	return result.Result, nil
+}
+
+func (t *Telegram) handleUpdate(update telegramUpdate) {
 	if update.Message == nil || update.Message.Text == "" {
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -80,8 +130,6 @@ func (t *Telegram) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if err := t.sendMessage(chatID, text); err != nil {
 		slog.Error("telegram: failed to send message", "chat_id", chatID, "error", err)
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 func (t *Telegram) sendTyping(chatID int64) {
