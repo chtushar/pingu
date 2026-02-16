@@ -8,6 +8,8 @@ import (
 	"pingu/internal/channels"
 	"pingu/internal/config"
 	gw "pingu/internal/gateway"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -60,7 +62,15 @@ func buildChannels(cfg *config.Config) []channels.Channel {
 		}
 		switch ch.Type {
 		case "telegram":
-			chs = append(chs, channels.NewTelegram(ch.Settings["bot_token"], nil))
+			var allowedUsers []int64
+			if v, ok := ch.Settings["allowed_users"]; ok {
+				for _, s := range strings.Split(v, ",") {
+					if id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
+						allowedUsers = append(allowedUsers, id)
+					}
+				}
+			}
+			chs = append(chs, channels.NewTelegram(ch.Settings["bot_token"], allowedUsers, nil))
 			slog.Info("channel registered", "name", name, "type", ch.Type)
 		default:
 			slog.Warn("unknown channel type", "name", name, "type", ch.Type)

@@ -22,17 +22,23 @@ const (
 )
 
 type Telegram struct {
-	botToken string
-	runner   agent.Runner
-	apiURL   string
-	offset   int64
+	botToken     string
+	runner       agent.Runner
+	apiURL       string
+	offset       int64
+	allowedUsers map[int64]bool
 }
 
-func NewTelegram(botToken string, runner agent.Runner) *Telegram {
+func NewTelegram(botToken string, allowedUsers []int64, runner agent.Runner) *Telegram {
+	allowed := make(map[int64]bool, len(allowedUsers))
+	for _, id := range allowedUsers {
+		allowed[id] = true
+	}
 	return &Telegram{
-		botToken: botToken,
-		runner:   runner,
-		apiURL:   fmt.Sprintf(telegramAPIBase, botToken),
+		botToken:     botToken,
+		runner:       runner,
+		apiURL:       fmt.Sprintf(telegramAPIBase, botToken),
+		allowedUsers: allowed,
 	}
 }
 
@@ -67,8 +73,13 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
+	From telegramUser `json:"from"`
 	Chat telegramChat `json:"chat"`
 	Text string       `json:"text"`
+}
+
+type telegramUser struct {
+	ID int64 `json:"id"`
 }
 
 type telegramChat struct {
@@ -119,10 +130,16 @@ func (t *Telegram) handleUpdate(update telegramUpdate) {
 		return
 	}
 
+	if len(t.allowedUsers) > 0 && !t.allowedUsers[update.Message.From.ID] {
+		slog.Warn("telegram: unauthorized user", "user_id", update.Message.From.ID)
+		t.sendMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
+		return
+	}
+
 	chatID := update.Message.Chat.ID
 	text := update.Message.Text
 
-	slog.Info("telegram: received message", "chat_id", chatID, "text", text)
+	slog.Debug("telegram: received message", "chat_id", chatID, "text", text)
 
 	t.sendTyping(chatID)
 
