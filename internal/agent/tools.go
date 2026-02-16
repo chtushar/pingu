@@ -9,6 +9,12 @@ type Tool interface {
 	Execute(ctx context.Context, input string) (string, error)
 }
 
+// EmitSetter is implemented by tools that need to push events to the user.
+// The runner checks for this via type assertion and injects the callback.
+type EmitSetter interface {
+	SetEmit(func(Event))
+}
+
 type Registry struct {
 	tools map[string]Tool
 }

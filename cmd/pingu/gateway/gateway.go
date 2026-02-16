@@ -12,6 +12,7 @@ import (
 	gw "pingu/internal/gateway"
 	"pingu/internal/history"
 	"pingu/internal/llm"
+	"pingu/internal/tools"
 	"strconv"
 	"strings"
 	"syscall"
@@ -54,7 +55,11 @@ var Cmd = &cobra.Command{
 			return fmt.Errorf("default LLM %q not found in config", cfg.DefaultLLM)
 		}
 		provider := llm.NewOpenAI(llmCfg.BaseURL, llmCfg.APIKey, llmCfg.Model)
-		runner := agent.NewSimpleRunner(provider, store)
+
+		registry := agent.NewRegistry()
+		registry.Register(&tools.Message{})
+
+		runner := agent.NewSimpleRunner(provider, store, registry)
 
 		chs := buildChannels(cfg, runner)
 
