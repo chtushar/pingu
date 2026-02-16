@@ -27,47 +27,18 @@ func NewOpenAI(baseURL, apiKey, model string) *OpenAIProvider {
 	return &OpenAIProvider{client: &client, model: model}
 }
 
-func (o *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, tools []ToolDef, onToken func(string)) (*Response, error) {
-	input := make(responses.ResponseInputParam, 0, len(messages))
-	for _, m := range messages {
-		switch m.Role {
-		case "tool":
-			input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(m.ToolCallID, m.Content))
-		case "assistant":
-			for _, tc := range m.ToolCalls {
-				input = append(input, responses.ResponseInputItemParamOfFunctionCall(tc.Input, tc.ID, tc.Name))
-			}
-			if m.Content != "" {
-				input = append(input, responses.ResponseInputItemParamOfMessage(m.Content, "assistant"))
-			}
-		default:
-			input = append(input, responses.ResponseInputItemParamOfMessage(m.Content, responses.EasyInputMessageRole(m.Role)))
-		}
-	}
-
+func (o *OpenAIProvider) ChatStream(ctx context.Context, input []responses.ResponseInputItemUnionParam, tools []responses.ToolUnionParam, onToken func(string)) (*responses.Response, error) {
 	params := responses.ResponseNewParams{
 		Model: shared.ResponsesModel(o.model),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
 		},
-	}
-
-	if len(tools) > 0 {
-		for _, t := range tools {
-			params.Tools = append(params.Tools, responses.ToolUnionParam{
-				OfFunction: &responses.FunctionToolParam{
-					Name:        t.Name,
-					Description: openai.String(t.Description),
-					Parameters:  toFunctionParams(t.InputSchema),
-				},
-			})
-		}
+		Tools: tools,
 	}
 
 	stream := o.client.Responses.NewStreaming(ctx, params)
 
-	var content string
-	var toolCalls []ToolCall
+	var completed *responses.Response
 
 	for stream.Next() {
 		event := stream.Current()
@@ -76,14 +47,9 @@ func (o *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 		case "response.output_text.delta":
 			if event.Delta != "" {
 				onToken(event.Delta)
-				content += event.Delta
 			}
-		case "response.function_call_arguments.done":
-			toolCalls = append(toolCalls, ToolCall{
-				ID:    event.ItemID,
-				Name:  event.Name,
-				Input: event.Arguments,
-			})
+		case "response.completed":
+			completed = &event.Response
 		case "response.failed":
 			return nil, fmt.Errorf("response failed: %s", event.Response.Error.Message)
 		}
@@ -93,15 +59,5 @@ func (o *OpenAIProvider) ChatStream(ctx context.Context, messages []Message, too
 		return nil, err
 	}
 
-	return &Response{
-		Content:   content,
-		ToolCalls: toolCalls,
-	}, nil
-}
-
-func toFunctionParams(schema any) map[string]any {
-	if m, ok := schema.(map[string]any); ok {
-		return m
-	}
-	return nil
+	return completed, nil
 }

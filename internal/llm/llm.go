@@ -1,32 +1,11 @@
 package llm
 
-import "context"
+import (
+	"context"
 
-type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolName   string     `json:"tool_name,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-}
-
-type ToolCall struct {
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Input string `json:"input"`
-}
-
-type Response struct {
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-}
-
-type ToolDef struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	InputSchema any    `json:"input_schema"`
-}
+	"github.com/openai/openai-go/v3/responses"
+)
 
 type Provider interface {
-	ChatStream(ctx context.Context, messages []Message, tools []ToolDef, onToken func(string)) (*Response, error)
+	ChatStream(ctx context.Context, input []responses.ResponseInputItemUnionParam, tools []responses.ToolUnionParam, onToken func(string)) (*responses.Response, error)
 }

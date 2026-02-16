@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"pingu/internal/llm"
+
+	"github.com/openai/openai-go/v3/responses"
 )
 
 type SimpleRunner struct {
@@ -14,11 +16,11 @@ func NewSimpleRunner(provider llm.Provider) *SimpleRunner {
 }
 
 func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string, emit func(Event)) error {
-	messages := []llm.Message{
-		{Role: "user", Content: message},
+	input := []responses.ResponseInputItemUnionParam{
+		responses.ResponseInputItemParamOfMessage(message, "user"),
 	}
 
-	resp, err := r.provider.ChatStream(ctx, messages, nil, func(token string) {
+	resp, err := r.provider.ChatStream(ctx, input, nil, func(token string) {
 		emit(Event{Type: EventToken, Data: token})
 	})
 	if err != nil {
@@ -26,6 +28,6 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 		return err
 	}
 
-	emit(Event{Type: EventDone, Data: resp.Content})
+	emit(Event{Type: EventDone, Data: resp.OutputText()})
 	return nil
 }
