@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/header.webp" alt="Pingu" width="600" />
+</p>
+
 # pingu
 
 Pingu is a personal AI agent built in Go. Single binary, runs anywhere. Chat via CLI or Telegram, execute tasks through a ReAct-style tool loop with built-in support for shell commands, file operations, and web fetching. Persistent sessions via SQLite, extensible through a skill system.
