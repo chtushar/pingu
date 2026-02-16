@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"pingu/internal/agent"
+	"strings"
 	"time"
 )
 
@@ -143,9 +144,23 @@ func (t *Telegram) handleUpdate(update telegramUpdate) {
 
 	t.sendTyping(chatID)
 
-	// Echo the message back
-	if err := t.sendMessage(chatID, text); err != nil {
-		slog.Error("telegram: failed to send message", "chat_id", chatID, "error", err)
+	sessionID := fmt.Sprintf("telegram:%d", chatID)
+	var response strings.Builder
+	err := t.runner.Run(context.Background(), sessionID, text, func(e agent.Event) {
+		if e.Type == agent.EventToken {
+			response.WriteString(e.Data.(string))
+		}
+	})
+	if err != nil {
+		slog.Error("telegram: runner failed", "chat_id", chatID, "error", err)
+		t.sendMessage(chatID, "Sorry, something went wrong.")
+		return
+	}
+
+	if reply := response.String(); reply != "" {
+		if err := t.sendMessage(chatID, reply); err != nil {
+			slog.Error("telegram: failed to send message", "chat_id", chatID, "error", err)
+		}
 	}
 }
 

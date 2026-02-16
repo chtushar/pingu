@@ -38,11 +38,10 @@ type DBConfig struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		DefaultLLM: "anthropic",
+		DefaultLLM: "openai",
 		LLMs: map[string]*LLMConfig{
-			"anthropic": {
-				Model:   "claude-sonnet-4-20250514",
-				BaseURL: "https://api.anthropic.com/v1",
+			"openai": {
+				Model: "gpt-4.1-nano",
 			},
 		},
 		Gateway: GatewayConfig{
@@ -64,8 +63,8 @@ func Load() (*Config, error) {
 }
 
 func configPath() string {
-	dir, _ := os.UserConfigDir()
-	return filepath.Join(dir, "pingu", "config.toml")
+	dir, _ := os.UserHomeDir()
+	return filepath.Join(dir, ".config", "pingu", "config.toml")
 }
 
 func defaultDBPath() string {

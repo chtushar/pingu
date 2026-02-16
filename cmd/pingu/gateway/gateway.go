@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os/signal"
+	"pingu/internal/agent"
 	"pingu/internal/channels"
 	"pingu/internal/config"
 	gw "pingu/internal/gateway"
+	"pingu/internal/llm"
 	"strconv"
 	"strings"
 	"syscall"
@@ -33,7 +35,14 @@ var Cmd = &cobra.Command{
 			cfg.Gateway.Addr = addr
 		}
 
-		chs := buildChannels(cfg)
+		llmCfg, ok := cfg.LLMs[cfg.DefaultLLM]
+		if !ok {
+			return fmt.Errorf("default LLM %q not found in config", cfg.DefaultLLM)
+		}
+		provider := llm.NewOpenAI(llmCfg.BaseURL, llmCfg.APIKey, llmCfg.Model)
+		runner := agent.NewSimpleRunner(provider)
+
+		chs := buildChannels(cfg, runner)
 
 		// Start channel pollers in background
 		for _, ch := range chs {
@@ -44,7 +53,7 @@ var Cmd = &cobra.Command{
 			}(ch)
 		}
 
-		srv := gw.NewServer(nil, chs...)
+		srv := gw.NewServer(runner, chs...)
 		slog.Info("starting gateway", "addr", cfg.Gateway.Addr, "channels", len(chs))
 		return srv.ListenAndServe(ctx, cfg.Gateway.Addr)
 	},
@@ -54,7 +63,7 @@ func init() {
 	Cmd.Flags().StringVarP(&addr, "addr", "a", "", "override gateway listen address")
 }
 
-func buildChannels(cfg *config.Config) []channels.Channel {
+func buildChannels(cfg *config.Config, runner agent.Runner) []channels.Channel {
 	var chs []channels.Channel
 	for name, ch := range cfg.Channels {
 		if !ch.Enabled {
@@ -70,7 +79,7 @@ func buildChannels(cfg *config.Config) []channels.Channel {
 					}
 				}
 			}
-			chs = append(chs, channels.NewTelegram(ch.Settings["bot_token"], allowedUsers, nil))
+			chs = append(chs, channels.NewTelegram(ch.Settings["bot_token"], allowedUsers, runner))
 			slog.Info("channel registered", "name", name, "type", ch.Type)
 		default:
 			slog.Warn("unknown channel type", "name", name, "type", ch.Type)
