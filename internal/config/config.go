@@ -8,16 +8,17 @@ import (
 )
 
 type Config struct {
-	LLM      LLMConfig      `toml:"llm"`
-	Gateway  GatewayConfig  `toml:"gateway"`
-	Telegram TelegramConfig `toml:"telegram"`
-	DB       DBConfig       `toml:"db"`
+	DefaultLLM string                `toml:"default_llm"`
+	LLMs       map[string]*LLMConfig `toml:"llm"`
+	Gateway  GatewayConfig                `toml:"gateway"`
+	Channels map[string]*ChannelConfig    `toml:"channel"`
+	DB       DBConfig                     `toml:"db"`
 }
 
 type LLMConfig struct {
-	Provider  string `toml:"provider"`
-	Model     string `toml:"model"`
-	APIKeyEnv string `toml:"api_key_env"`
+	Model   string `toml:"model"`
+	BaseURL string `toml:"base_url"`
+	APIKey  string `toml:"api_key"`
 }
 
 type GatewayConfig struct {
@@ -25,10 +26,10 @@ type GatewayConfig struct {
 	Token string `toml:"token"`
 }
 
-type TelegramConfig struct {
-	Enabled     bool   `toml:"enabled"`
-	BotTokenEnv string `toml:"bot_token_env"`
-	WebhookURL  string `toml:"webhook_url"`
+type ChannelConfig struct {
+	Enabled    bool              `toml:"enabled"`
+	Type       string            `toml:"type"`
+	Settings   map[string]string `toml:"settings"`
 }
 
 type DBConfig struct {
@@ -37,10 +38,12 @@ type DBConfig struct {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		LLM: LLMConfig{
-			Provider:  "anthropic",
-			Model:     "claude-sonnet-4-20250514",
-			APIKeyEnv: "ANTHROPIC_API_KEY",
+		DefaultLLM: "anthropic",
+		LLMs: map[string]*LLMConfig{
+			"anthropic": {
+				Model:   "claude-sonnet-4-20250514",
+				BaseURL: "https://api.anthropic.com/v1",
+			},
 		},
 		Gateway: GatewayConfig{
 			Addr: ":8484",
