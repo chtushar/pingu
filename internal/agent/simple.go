@@ -5,9 +5,13 @@ import (
 	"log/slog"
 	"pingu/internal/history"
 	"pingu/internal/llm"
+	"pingu/internal/trace"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type SimpleRunner struct {
@@ -20,11 +24,15 @@ type SimpleRunner struct {
 func NewSimpleRunner(provider llm.Provider, store *history.Store, registry *Registry) *SimpleRunner {
 	var tools []responses.ToolUnionParam
 	for _, t := range registry.All() {
-		schema, _ := t.InputSchema().(map[string]any)
+		// Wrap each tool with tracing before building the tools list.
+		wrapped := withTrace(t)
+		registry.Register(wrapped)
+
+		schema, _ := wrapped.InputSchema().(map[string]any)
 		tools = append(tools, responses.ToolUnionParam{
 			OfFunction: &responses.FunctionToolParam{
-				Name:        t.Name(),
-				Description: openai.String(t.Description()),
+				Name:        wrapped.Name(),
+				Description: openai.String(wrapped.Description()),
 				Parameters:  schema,
 				Strict:      openai.Bool(true),
 			},
@@ -40,6 +48,22 @@ func NewSimpleRunner(provider llm.Provider, store *history.Store, registry *Regi
 }
 
 func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string, emit func(Event)) error {
+	truncatedMsg := message
+	if len(truncatedMsg) > 200 {
+		truncatedMsg = truncatedMsg[:200]
+	}
+	ctx, span := trace.Tracer().Start(ctx, "agent.run",
+		oteltrace.WithAttributes(
+			attribute.String("openai.agents.agent.name", "pingu"),
+			attribute.String("session.id", sessionID),
+			attribute.String("user.message", truncatedMsg),
+		),
+	)
+	defer span.End()
+
+	sc := span.SpanContext()
+	slog.Debug("agent.run span started", "trace_id", sc.TraceID(), "span_id", sc.SpanID())
+
 	// Inject emit callback into tools that need it.
 	for _, t := range r.registry.All() {
 		if es, ok := t.(EmitSetter); ok {
@@ -66,15 +90,45 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 	)
 
 	var resp *responses.Response
+	iteration := 0
 
 	for {
-		resp, err = r.provider.ChatStream(ctx, input, r.tools, func(token string) {
+		var llmSpan oteltrace.Span
+		var llmCtx context.Context
+		llmCtx, llmSpan = trace.Tracer().Start(ctx, "llm.chat",
+			oteltrace.WithAttributes(
+				attribute.Int("llm.iteration", iteration),
+			),
+		)
+
+		llmSC := llmSpan.SpanContext()
+		slog.Debug("llm.chat span started",
+			"trace_id", llmSC.TraceID(),
+			"span_id", llmSC.SpanID(),
+			"parent_span_id", sc.SpanID(),
+			"iteration", iteration,
+		)
+
+		resp, err = r.provider.ChatStream(llmCtx, input, r.tools, func(token string) {
 			// Ignore streaming text tokens; output goes through the message tool.
 		})
 		if err != nil {
+			llmSpan.RecordError(err)
+			llmSpan.SetStatus(codes.Error, err.Error())
+			llmSpan.End()
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			emit(Event{Type: EventError, Data: err.Error()})
 			return err
 		}
+
+		llmSpan.SetAttributes(
+			attribute.String("llm.model", string(resp.Model)),
+			attribute.Int64("llm.input_tokens", resp.Usage.InputTokens),
+			attribute.Int64("llm.output_tokens", resp.Usage.OutputTokens),
+		)
+		llmSpan.End()
+		iteration++
 
 		// Convert output items to input items for the next iteration.
 		outputAsInput := history.OutputToInput(resp.Output)

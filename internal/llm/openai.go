@@ -3,11 +3,13 @@ package llm
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 type OpenAIProvider struct {
@@ -23,6 +25,9 @@ func NewOpenAI(baseURL, apiKey, model string) *OpenAIProvider {
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
+	opts = append(opts, option.WithHTTPClient(&http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}))
 	client := openai.NewClient(opts...)
 	return &OpenAIProvider{client: &client, model: model}
 }
