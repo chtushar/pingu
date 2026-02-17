@@ -56,12 +56,40 @@ var Cmd = &cobra.Command{
 		}
 		provider := llm.NewOpenAI(llmCfg.BaseURL, llmCfg.APIKey, llmCfg.Model)
 
+		// Build global tool registry.
 		registry := agent.NewRegistry()
 		registry.Register(&tools.Message{})
 		registry.Register(&tools.Shell{})
 		registry.Register(&tools.File{})
 
-		runner := agent.NewSimpleRunner(provider, store, registry)
+		// Convert config agent profiles.
+		profiles := make(map[string]*agent.AgentProfile)
+		for name, ac := range cfg.Agents {
+			profiles[name] = &agent.AgentProfile{
+				Name:         name,
+				SystemPrompt: ac.SystemPrompt,
+				Tools:        ac.Tools,
+			}
+		}
+
+		// Create factory and delegate tool if profiles are configured.
+		if len(profiles) > 0 {
+			factory := agent.NewRunnerFactory(provider, store, registry, profiles)
+			registry.Register(tools.NewDelegate(factory))
+		}
+
+		// Build orchestrator runner: use "orchestrator" profile if it exists, else default.
+		var runner agent.Runner
+		if p, ok := profiles["orchestrator"]; ok {
+			var opts []agent.RunnerOption
+			if p.SystemPrompt != "" {
+				opts = append(opts, agent.WithSystemPrompt(p.SystemPrompt))
+			}
+			orchestratorRegistry := registry.Scope(p.Tools)
+			runner = agent.NewSimpleRunner(provider, store, orchestratorRegistry, opts...)
+		} else {
+			runner = agent.NewSimpleRunner(provider, store, registry)
+		}
 
 		chs := buildChannels(cfg, runner)
 

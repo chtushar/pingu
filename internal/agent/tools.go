@@ -9,12 +9,6 @@ type Tool interface {
 	Execute(ctx context.Context, input string) (string, error)
 }
 
-// EmitSetter is implemented by tools that need to push events to the user.
-// The runner checks for this via type assertion and injects the callback.
-type EmitSetter interface {
-	SetEmit(func(Event))
-}
-
 type Registry struct {
 	tools map[string]Tool
 }
@@ -38,4 +32,22 @@ func (r *Registry) All() []Tool {
 		out = append(out, t)
 	}
 	return out
+}
+
+// Scope returns a new registry containing only the named tools.
+// If names is empty, all tools are copied to the new registry.
+func (r *Registry) Scope(names []string) *Registry {
+	scoped := NewRegistry()
+	if len(names) == 0 {
+		for k, v := range r.tools {
+			scoped.tools[k] = v
+		}
+		return scoped
+	}
+	for _, name := range names {
+		if t, ok := r.tools[name]; ok {
+			scoped.tools[name] = t
+		}
+	}
+	return scoped
 }

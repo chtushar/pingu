@@ -6,6 +6,7 @@ import (
 	"pingu/internal/history"
 	"pingu/internal/llm"
 	"pingu/internal/trace"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/responses"
@@ -14,40 +15,57 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-type SimpleRunner struct {
-	provider llm.Provider
-	store    *history.Store
-	registry *Registry
-	tools    []responses.ToolUnionParam
+const defaultSystemPrompt = "You must use the message tool to communicate with the user. Do not produce raw text output."
+
+type RunnerOption func(*SimpleRunner)
+
+func WithSystemPrompt(s string) RunnerOption {
+	return func(r *SimpleRunner) {
+		r.systemPrompt = s
+	}
 }
 
-func NewSimpleRunner(provider llm.Provider, store *history.Store, registry *Registry) *SimpleRunner {
-	var tools []responses.ToolUnionParam
-	for _, t := range registry.All() {
-		// Wrap each tool with tracing before building the tools list.
-		wrapped := withTrace(t)
-		registry.Register(wrapped)
+type SimpleRunner struct {
+	provider     llm.Provider
+	store        *history.Store
+	registry     *Registry
+	tools        []responses.ToolUnionParam
+	systemPrompt string
+}
 
-		schema, _ := wrapped.InputSchema().(map[string]any)
-		tools = append(tools, responses.ToolUnionParam{
+func NewSimpleRunner(provider llm.Provider, store *history.Store, registry *Registry, opts ...RunnerOption) *SimpleRunner {
+	r := &SimpleRunner{
+		provider:     provider,
+		store:        store,
+		registry:     registry,
+		systemPrompt: defaultSystemPrompt,
+	}
+
+	for _, opt := range opts {
+		opt(r)
+	}
+
+	// Build tool params list from the registry without mutating it.
+	// Tracing is applied at execution time, not here.
+	for _, t := range registry.All() {
+		schema, _ := t.InputSchema().(map[string]any)
+		r.tools = append(r.tools, responses.ToolUnionParam{
 			OfFunction: &responses.FunctionToolParam{
-				Name:        wrapped.Name(),
-				Description: openai.String(wrapped.Description()),
+				Name:        t.Name(),
+				Description: openai.String(t.Description()),
 				Parameters:  schema,
 				Strict:      openai.Bool(true),
 			},
 		})
 	}
 
-	return &SimpleRunner{
-		provider: provider,
-		store:    store,
-		registry: registry,
-		tools:    tools,
-	}
+	return r
 }
 
 func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string, emit func(Event)) error {
+	ctx = ContextWithSessionID(ctx, sessionID)
+	ctx = ContextWithEmit(ctx, emit)
+
 	truncatedMsg := message
 	if len(truncatedMsg) > 200 {
 		truncatedMsg = truncatedMsg[:200]
@@ -64,13 +82,6 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 	sc := span.SpanContext()
 	slog.Debug("agent.run span started", "trace_id", sc.TraceID(), "span_id", sc.SpanID())
 
-	// Inject emit callback into tools that need it.
-	for _, t := range r.registry.All() {
-		if es, ok := t.(EmitSetter); ok {
-			es.SetEmit(emit)
-		}
-	}
-
 	if err := r.store.EnsureSession(ctx, sessionID, "default"); err != nil {
 		slog.Warn("failed to ensure session", "session_id", sessionID, "error", err)
 	}
@@ -82,10 +93,7 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 	}
 
 	input = append(input,
-		responses.ResponseInputItemParamOfMessage(
-			"You must use the message tool to communicate with the user. Do not produce raw text output.",
-			"developer",
-		),
+		responses.ResponseInputItemParamOfMessage(r.systemPrompt, "developer"),
 		responses.ResponseInputItemParamOfMessage(message, "user"),
 	)
 
@@ -147,25 +155,34 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 			break
 		}
 
-		// Execute each function call and append results.
-		for _, call := range calls {
-			fc := call.AsFunctionCall()
-			tool, ok := r.registry.Get(fc.Name)
-			if !ok {
-				slog.Warn("unknown tool call", "name", fc.Name)
-				input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: unknown tool"))
-				continue
-			}
+		// Execute tool calls in parallel.
+		var wg sync.WaitGroup
+		results := make([]responses.ResponseInputItemUnionParam, len(calls))
+		for i, call := range calls {
+			wg.Add(1)
+			go func(i int, call responses.ResponseOutputItemUnion) {
+				defer wg.Done()
+				fc := call.AsFunctionCall()
+				tool, ok := r.registry.Get(fc.Name)
+				if !ok {
+					slog.Warn("unknown tool call", "name", fc.Name)
+					results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: unknown tool")
+					return
+				}
 
-			result, execErr := tool.Execute(ctx, fc.Arguments)
-			if execErr != nil {
-				slog.Warn("tool execution failed", "name", fc.Name, "error", execErr)
-				input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: "+execErr.Error()))
-				continue
-			}
-
-			input = append(input, responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, result))
+				// Use traced execution — wrap inline to preserve tracing without mutating registry.
+				traced := withTrace(tool)
+				result, execErr := traced.Execute(ctx, fc.Arguments)
+				if execErr != nil {
+					slog.Warn("tool execution failed", "name", fc.Name, "error", execErr)
+					results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: "+execErr.Error())
+					return
+				}
+				results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, result)
+			}(i, call)
 		}
+		wg.Wait()
+		input = append(input, results...)
 	}
 
 	if err := r.store.SaveTurn(ctx, sessionID, message, resp); err != nil {

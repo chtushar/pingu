@@ -12,6 +12,7 @@ type Config struct {
 	LLMs       map[string]*LLMConfig `toml:"llm"`
 	Gateway  GatewayConfig                `toml:"gateway"`
 	Channels map[string]*ChannelConfig    `toml:"channel"`
+	Agents   map[string]*AgentConfig      `toml:"agent"`
 	DB       DBConfig                     `toml:"db"`
 }
 
@@ -30,6 +31,11 @@ type ChannelConfig struct {
 	Enabled    bool              `toml:"enabled"`
 	Type       string            `toml:"type"`
 	Settings   map[string]string `toml:"settings"`
+}
+
+type AgentConfig struct {
+	SystemPrompt string   `toml:"system_prompt"`
+	Tools        []string `toml:"tools"`
 }
 
 type DBConfig struct {

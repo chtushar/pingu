@@ -38,13 +38,9 @@ func (t *tracedTool) Execute(ctx context.Context, input string) (string, error) 
 		return result, err
 	}
 
-	span.SetAttributes(attribute.Int("gen_ai.tool.output_length", len(result)))
+	span.SetAttributes(
+		attribute.String("gen_ai.tool.output", result),
+		attribute.Int("gen_ai.tool.output_length", len(result)),
+	)
 	return result, nil
-}
-
-// SetEmit forwards to the inner tool if it implements EmitSetter.
-func (t *tracedTool) SetEmit(emit func(Event)) {
-	if es, ok := t.Tool.(EmitSetter); ok {
-		es.SetEmit(emit)
-	}
 }
