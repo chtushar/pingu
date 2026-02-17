@@ -62,7 +62,7 @@ func (t *Telegram) Start(ctx context.Context) error {
 			}
 			for _, u := range updates {
 				t.offset = u.UpdateID + 1
-				t.handleUpdate(u)
+				t.handleUpdate(ctx, u)
 			}
 		}
 	}
@@ -126,7 +126,7 @@ func (t *Telegram) getUpdates(ctx context.Context) ([]telegramUpdate, error) {
 	return result.Result, nil
 }
 
-func (t *Telegram) handleUpdate(update telegramUpdate) {
+func (t *Telegram) handleUpdate(ctx context.Context, update telegramUpdate) {
 	if update.Message == nil || update.Message.Text == "" {
 		return
 	}
@@ -146,7 +146,7 @@ func (t *Telegram) handleUpdate(update telegramUpdate) {
 
 	sessionID := fmt.Sprintf("telegram:%d", chatID)
 	var response strings.Builder
-	err := t.runner.Run(context.Background(), sessionID, text, func(e agent.Event) {
+	err := t.runner.Run(ctx, sessionID, text, func(e agent.Event) {
 		if e.Type == agent.EventToken {
 			response.WriteString(e.Data.(string))
 		}
