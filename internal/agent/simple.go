@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"pingu/internal/history"
 	"pingu/internal/llm"
+	"pingu/internal/memory"
 	"pingu/internal/trace"
 	"sync"
 
@@ -28,15 +29,17 @@ func WithSystemPrompt(s string) RunnerOption {
 type SimpleRunner struct {
 	provider     llm.Provider
 	store        *history.Store
+	memory       memory.Memory
 	registry     *Registry
 	tools        []responses.ToolUnionParam
 	systemPrompt string
 }
 
-func NewSimpleRunner(provider llm.Provider, store *history.Store, registry *Registry, opts ...RunnerOption) *SimpleRunner {
+func NewSimpleRunner(provider llm.Provider, store *history.Store, mem memory.Memory, registry *Registry, opts ...RunnerOption) *SimpleRunner {
 	r := &SimpleRunner{
 		provider:     provider,
 		store:        store,
+		memory:       mem,
 		registry:     registry,
 		systemPrompt: defaultSystemPrompt,
 	}
@@ -86,9 +89,9 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 		slog.Warn("failed to ensure session", "session_id", sessionID, "error", err)
 	}
 
-	input, err := r.store.LoadInputHistory(ctx, sessionID)
+	input, err := r.memory.Recall(ctx, sessionID)
 	if err != nil {
-		slog.Warn("failed to load history", "session_id", sessionID, "error", err)
+		slog.Warn("failed to recall memory", "session_id", sessionID, "error", err)
 		input = nil
 	}
 

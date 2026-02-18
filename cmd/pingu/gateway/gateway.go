@@ -12,6 +12,7 @@ import (
 	gw "pingu/internal/gateway"
 	"pingu/internal/history"
 	"pingu/internal/llm"
+	"pingu/internal/memory"
 	"pingu/internal/tools"
 	"strconv"
 	"strings"
@@ -56,6 +57,8 @@ var Cmd = &cobra.Command{
 		}
 		provider := llm.NewOpenAI(llmCfg.BaseURL, llmCfg.APIKey, llmCfg.Model)
 
+		mem := memory.NewConversationMemory(store)
+
 		// Build global tool registry.
 		registry := agent.NewRegistry()
 		registry.Register(&tools.Message{})
@@ -74,7 +77,7 @@ var Cmd = &cobra.Command{
 
 		// Create factory and delegate tool if profiles are configured.
 		if len(profiles) > 0 {
-			factory := agent.NewRunnerFactory(provider, store, registry, profiles)
+			factory := agent.NewRunnerFactory(provider, store, mem, registry, profiles)
 			registry.Register(tools.NewDelegate(factory))
 		}
 
@@ -86,9 +89,9 @@ var Cmd = &cobra.Command{
 				opts = append(opts, agent.WithSystemPrompt(p.SystemPrompt))
 			}
 			orchestratorRegistry := registry.Scope(p.Tools)
-			runner = agent.NewSimpleRunner(provider, store, orchestratorRegistry, opts...)
+			runner = agent.NewSimpleRunner(provider, store, mem, orchestratorRegistry, opts...)
 		} else {
-			runner = agent.NewSimpleRunner(provider, store, registry)
+			runner = agent.NewSimpleRunner(provider, store, mem, registry)
 		}
 
 		chs := buildChannels(cfg, runner)

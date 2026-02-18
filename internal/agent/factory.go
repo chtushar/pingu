@@ -4,20 +4,23 @@ import (
 	"fmt"
 	"pingu/internal/history"
 	"pingu/internal/llm"
+	"pingu/internal/memory"
 )
 
 // RunnerFactory builds scoped runners from agent profiles.
 type RunnerFactory struct {
 	provider       llm.Provider
 	store          *history.Store
+	memory         memory.Memory
 	globalRegistry *Registry
 	profiles       map[string]*AgentProfile
 }
 
-func NewRunnerFactory(provider llm.Provider, store *history.Store, registry *Registry, profiles map[string]*AgentProfile) *RunnerFactory {
+func NewRunnerFactory(provider llm.Provider, store *history.Store, mem memory.Memory, registry *Registry, profiles map[string]*AgentProfile) *RunnerFactory {
 	return &RunnerFactory{
 		provider:       provider,
 		store:          store,
+		memory:         mem,
 		globalRegistry: registry,
 		profiles:       profiles,
 	}
@@ -37,7 +40,7 @@ func (f *RunnerFactory) Build(profileName string) (Runner, error) {
 		opts = append(opts, WithSystemPrompt(profile.SystemPrompt))
 	}
 
-	return NewSimpleRunner(f.provider, f.store, registry, opts...), nil
+	return NewSimpleRunner(f.provider, f.store, f.memory, registry, opts...), nil
 }
 
 // Profiles returns the names of all registered profiles.
