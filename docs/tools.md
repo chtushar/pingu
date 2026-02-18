@@ -79,7 +79,34 @@ Spawns a scoped sub-agent to handle a task. See [Delegation](delegation.md) for 
 
 ### `web`
 
-Placeholder for URL fetching. Not yet implemented.
+Searches the web via the Brave Search API or fetches content from a URL.
+
+**Search** — query the web and return formatted results:
+```json
+{ "action": "search", "query": "golang context best practices", "count": 5 }
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `action` | `"search"` | required | Perform a web search |
+| `query` | string | required | Search query |
+| `count` | number | 5 | Number of results (max 20) |
+
+Each result is returned as `Title\nURL\nDescription`, separated by `---`.
+
+**Fetch** — HTTP GET a URL and return its text content:
+```json
+{ "action": "fetch", "url": "https://example.com/article" }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | `"fetch"` | Fetch a URL |
+| `url` | string | URL to fetch |
+
+The response body is capped at 100 KB, HTML tags are stripped, and output is truncated to 10,000 bytes.
+
+**Configuration:** Requires `[services.brave] api_key = "BSA..."` in config.toml. The tool is only registered when the API key is present.
 
 **Source:** `internal/tools/web.go`
 

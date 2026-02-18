@@ -14,6 +14,15 @@ type Config struct {
 	Channels map[string]*ChannelConfig    `toml:"channel"`
 	Agents   map[string]*AgentConfig      `toml:"agent"`
 	DB       DBConfig                     `toml:"db"`
+	Services ServicesConfig               `toml:"services"`
+}
+
+type ServicesConfig struct {
+	Brave BraveConfig `toml:"brave"`
+}
+
+type BraveConfig struct {
+	APIKey string `toml:"api_key"`
 }
 
 type LLMConfig struct {

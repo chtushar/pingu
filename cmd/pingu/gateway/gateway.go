@@ -64,6 +64,9 @@ var Cmd = &cobra.Command{
 		registry.Register(&tools.Message{})
 		registry.Register(&tools.Shell{})
 		registry.Register(&tools.File{})
+		if cfg.Services.Brave.APIKey != "" {
+			registry.Register(tools.NewWeb(cfg.Services.Brave.APIKey))
+		}
 
 		// Convert config agent profiles.
 		profiles := make(map[string]*agent.AgentProfile)
