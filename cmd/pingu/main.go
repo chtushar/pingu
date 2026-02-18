@@ -4,9 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"pingu/cmd/pingu/agent"
-	"pingu/cmd/pingu/gateway"
-	"pingu/cmd/pingu/setup"
+
 	"pingu/internal/config"
 	"pingu/internal/logger"
 	"pingu/internal/trace"
@@ -45,9 +43,9 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(setup.Cmd)
-	rootCmd.AddCommand(gateway.Cmd)
-	rootCmd.AddCommand(agent.Cmd)
+	rootCmd.AddCommand(setupCmd)
+	rootCmd.AddCommand(gatewayCmd)
+	rootCmd.AddCommand(agentCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

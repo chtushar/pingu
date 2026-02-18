@@ -1,4 +1,4 @@
-package gateway
+package main
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"pingu/internal/config"
 	"pingu/internal/db"
 	"pingu/internal/embedding"
-	gw "pingu/internal/gateway"
+	"pingu/internal/gateway"
 	"pingu/internal/history"
 	"pingu/internal/llm"
 	"pingu/internal/memory"
@@ -23,9 +23,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var addr string
+var gatewayAddr string
 
-var Cmd = &cobra.Command{
+var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
 	Short: "Start the gateway server",
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -37,8 +37,8 @@ var Cmd = &cobra.Command{
 			return fmt.Errorf("loading config: %w", err)
 		}
 
-		if addr != "" {
-			cfg.Gateway.Addr = addr
+		if gatewayAddr != "" {
+			cfg.Gateway.Addr = gatewayAddr
 		}
 
 		database, err := db.Open(cfg.DB.Path)
@@ -136,7 +136,7 @@ var Cmd = &cobra.Command{
 
 		chs := buildChannels(cfg, runner)
 
-		// Start channel pollers in background
+		// Start channel pollers in background.
 		for _, ch := range chs {
 			go func(c channels.Channel) {
 				if err := c.Start(ctx); err != nil && ctx.Err() == nil {
@@ -145,14 +145,14 @@ var Cmd = &cobra.Command{
 			}(ch)
 		}
 
-		srv := gw.NewServer(runner, chs...)
+		srv := gateway.NewServer(runner, chs...)
 		slog.Info("starting gateway", "addr", cfg.Gateway.Addr, "channels", len(chs))
 		return srv.ListenAndServe(ctx, cfg.Gateway.Addr)
 	},
 }
 
 func init() {
-	Cmd.Flags().StringVarP(&addr, "addr", "a", "", "override gateway listen address")
+	gatewayCmd.Flags().StringVarP(&gatewayAddr, "addr", "a", "", "override gateway listen address")
 }
 
 func buildChannels(cfg *config.Config, runner agent.Runner) []channels.Channel {

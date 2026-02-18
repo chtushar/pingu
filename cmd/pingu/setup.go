@@ -1,4 +1,4 @@
-package setup
+package main
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Cmd = &cobra.Command{
+var setupCmd = &cobra.Command{
 	Use:   "setup",
 	Short: "Set up pingu configuration",
 	Run: func(cmd *cobra.Command, args []string) {

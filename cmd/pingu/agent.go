@@ -1,4 +1,4 @@
-package agent
+package main
 
 import (
 	"fmt"
@@ -6,7 +6,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Cmd = &cobra.Command{
+var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Start the agent",
 	Run: func(cmd *cobra.Command, args []string) {
