@@ -10,6 +10,136 @@ import (
 	"database/sql"
 )
 
+const countTurnsBySession = `-- name: CountTurnsBySession :one
+SELECT COUNT(*) FROM turns WHERE session_id = ?
+`
+
+func (q *Queries) CountTurnsBySession(ctx context.Context, sessionID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTurnsBySession, sessionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const deleteExpiredMemories = `-- name: DeleteExpiredMemories :exec
+DELETE FROM memories
+WHERE category = 'conversation'
+  AND created_at < datetime('now', '-' || ?1 || ' days')
+`
+
+func (q *Queries) DeleteExpiredMemories(ctx context.Context, daysOld sql.NullString) error {
+	_, err := q.db.ExecContext(ctx, deleteExpiredMemories, daysOld)
+	return err
+}
+
+const deleteMemory = `-- name: DeleteMemory :exec
+DELETE FROM memories WHERE id = ?
+`
+
+func (q *Queries) DeleteMemory(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, deleteMemory, id)
+	return err
+}
+
+const getAllMemoriesWithEmbedding = `-- name: GetAllMemoriesWithEmbedding :many
+SELECT id, session_id, category, content, embedding
+FROM memories
+WHERE embedding IS NOT NULL
+  AND (session_id IS NULL OR session_id = ?)
+`
+
+type GetAllMemoriesWithEmbeddingRow struct {
+	ID        int64
+	SessionID sql.NullString
+	Category  string
+	Content   string
+	Embedding []byte
+}
+
+func (q *Queries) GetAllMemoriesWithEmbedding(ctx context.Context, sessionID sql.NullString) ([]GetAllMemoriesWithEmbeddingRow, error) {
+	rows, err := q.db.QueryContext(ctx, getAllMemoriesWithEmbedding, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetAllMemoriesWithEmbeddingRow
+	for rows.Next() {
+		var i GetAllMemoriesWithEmbeddingRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Category,
+			&i.Content,
+			&i.Embedding,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getEmbeddingCache = `-- name: GetEmbeddingCache :one
+SELECT content_hash, embed_model, embedding, created_at, last_used_at FROM embedding_cache WHERE content_hash = ?
+`
+
+func (q *Queries) GetEmbeddingCache(ctx context.Context, contentHash string) (EmbeddingCache, error) {
+	row := q.db.QueryRowContext(ctx, getEmbeddingCache, contentHash)
+	var i EmbeddingCache
+	err := row.Scan(
+		&i.ContentHash,
+		&i.EmbedModel,
+		&i.Embedding,
+		&i.CreatedAt,
+		&i.LastUsedAt,
+	)
+	return i, err
+}
+
+const getMemoriesBySession = `-- name: GetMemoriesBySession :many
+SELECT id, session_id, category, content, embedding, content_hash, created_at, updated_at FROM memories
+WHERE session_id IS NULL OR session_id = ?
+ORDER BY created_at DESC
+`
+
+func (q *Queries) GetMemoriesBySession(ctx context.Context, sessionID sql.NullString) ([]Memory, error) {
+	rows, err := q.db.QueryContext(ctx, getMemoriesBySession, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Memory
+	for rows.Next() {
+		var i Memory
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Category,
+			&i.Content,
+			&i.Embedding,
+			&i.ContentHash,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getSession = `-- name: GetSession :one
 SELECT id, channel, channel_id, title, model, summary, summary_up_to, created_at, updated_at FROM sessions WHERE id = ?
 `
@@ -65,6 +195,74 @@ func (q *Queries) GetTurnsBySession(ctx context.Context, sessionID string) ([]Tu
 	return items, nil
 }
 
+const getTurnsBySessionAfterID = `-- name: GetTurnsBySessionAfterID :many
+SELECT id, session_id, user_message, response_json, model, created_at FROM turns
+WHERE session_id = ? AND id > ?
+ORDER BY created_at ASC
+`
+
+type GetTurnsBySessionAfterIDParams struct {
+	SessionID string
+	ID        int64
+}
+
+func (q *Queries) GetTurnsBySessionAfterID(ctx context.Context, arg GetTurnsBySessionAfterIDParams) ([]Turn, error) {
+	rows, err := q.db.QueryContext(ctx, getTurnsBySessionAfterID, arg.SessionID, arg.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Turn
+	for rows.Next() {
+		var i Turn
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.UserMessage,
+			&i.ResponseJson,
+			&i.Model,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const insertMemory = `-- name: InsertMemory :one
+INSERT INTO memories (session_id, category, content, embedding, content_hash)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id
+`
+
+type InsertMemoryParams struct {
+	SessionID   sql.NullString
+	Category    string
+	Content     string
+	Embedding   []byte
+	ContentHash sql.NullString
+}
+
+func (q *Queries) InsertMemory(ctx context.Context, arg InsertMemoryParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, insertMemory,
+		arg.SessionID,
+		arg.Category,
+		arg.Content,
+		arg.Embedding,
+		arg.ContentHash,
+	)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const insertTurn = `-- name: InsertTurn :exec
 INSERT INTO turns (session_id, user_message, response_json, model)
 VALUES (?, ?, ?, ?)
@@ -84,6 +282,56 @@ func (q *Queries) InsertTurn(ctx context.Context, arg InsertTurnParams) error {
 		arg.ResponseJson,
 		arg.Model,
 	)
+	return err
+}
+
+const pruneEmbeddingCache = `-- name: PruneEmbeddingCache :exec
+DELETE FROM embedding_cache
+WHERE content_hash NOT IN (
+    SELECT content_hash FROM embedding_cache
+    ORDER BY last_used_at DESC
+    LIMIT ?1
+)
+`
+
+func (q *Queries) PruneEmbeddingCache(ctx context.Context, keepCount int64) error {
+	_, err := q.db.ExecContext(ctx, pruneEmbeddingCache, keepCount)
+	return err
+}
+
+const updateSessionSummary = `-- name: UpdateSessionSummary :exec
+UPDATE sessions
+SET summary = ?, summary_up_to = ?, updated_at = datetime('now')
+WHERE id = ?
+`
+
+type UpdateSessionSummaryParams struct {
+	Summary     sql.NullString
+	SummaryUpTo sql.NullString
+	ID          string
+}
+
+func (q *Queries) UpdateSessionSummary(ctx context.Context, arg UpdateSessionSummaryParams) error {
+	_, err := q.db.ExecContext(ctx, updateSessionSummary, arg.Summary, arg.SummaryUpTo, arg.ID)
+	return err
+}
+
+const upsertEmbeddingCache = `-- name: UpsertEmbeddingCache :exec
+INSERT INTO embedding_cache (content_hash, embed_model, embedding, last_used_at)
+VALUES (?, ?, ?, datetime('now'))
+ON CONFLICT(content_hash) DO UPDATE SET
+    embedding = excluded.embedding,
+    last_used_at = datetime('now')
+`
+
+type UpsertEmbeddingCacheParams struct {
+	ContentHash string
+	EmbedModel  string
+	Embedding   []byte
+}
+
+func (q *Queries) UpsertEmbeddingCache(ctx context.Context, arg UpsertEmbeddingCacheParams) error {
+	_, err := q.db.ExecContext(ctx, upsertEmbeddingCache, arg.ContentHash, arg.EmbedModel, arg.Embedding)
 	return err
 }
 

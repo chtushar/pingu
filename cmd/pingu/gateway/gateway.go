@@ -5,18 +5,20 @@ import (
 	"fmt"
 	"log/slog"
 	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+
 	"pingu/internal/agent"
 	"pingu/internal/channels"
 	"pingu/internal/config"
 	"pingu/internal/db"
+	"pingu/internal/embedding"
 	gw "pingu/internal/gateway"
 	"pingu/internal/history"
 	"pingu/internal/llm"
 	"pingu/internal/memory"
 	"pingu/internal/tools"
-	"strconv"
-	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -57,7 +59,29 @@ var Cmd = &cobra.Command{
 		}
 		provider := llm.NewOpenAI(llmCfg.BaseURL, llmCfg.APIKey, llmCfg.Model)
 
-		mem := memory.NewConversationMemory(store)
+		// Embedding provider (optional).
+		var embedProvider embedding.Provider
+		if cfg.Memory.Embedding.Enabled {
+			embLLM, ok := cfg.LLMs[cfg.Memory.Embedding.LLM]
+			if !ok {
+				return fmt.Errorf("embedding LLM %q not found in config", cfg.Memory.Embedding.LLM)
+			}
+			raw := embedding.NewOpenAI(embLLM.BaseURL, embLLM.APIKey, cfg.Memory.Embedding.Model, cfg.Memory.Embedding.Dimensions)
+			embedProvider = embedding.NewCachedProvider(raw, database, cfg.Memory.Embedding.CacheSize)
+			slog.Info("embedding provider enabled", "model", cfg.Memory.Embedding.Model, "dimensions", cfg.Memory.Embedding.Dimensions)
+		}
+
+		// Semantic memory store and hybrid searcher.
+		semanticStore := memory.NewSemanticStore(database, embedProvider)
+		searcher := memory.NewHybridSearcher(database, embedProvider, cfg.Memory.VectorWeight, cfg.Memory.FTSWeight)
+
+		// Memory implementation: enhanced (auto-inject) or plain conversation.
+		var mem memory.Memory
+		if cfg.Memory.AutoInject {
+			mem = memory.NewEnhancedMemory(store, searcher, cfg.Memory.MaxResults)
+		} else {
+			mem = memory.NewConversationMemory(store)
+		}
 
 		// Build global tool registry.
 		registry := agent.NewRegistry()
@@ -67,6 +91,8 @@ var Cmd = &cobra.Command{
 		if cfg.Services.Brave.APIKey != "" {
 			registry.Register(tools.NewWeb(cfg.Services.Brave.APIKey))
 		}
+		registry.Register(tools.NewMemoryStore(semanticStore))
+		registry.Register(tools.NewMemoryRecall(searcher))
 
 		// Convert config agent profiles.
 		profiles := make(map[string]*agent.AgentProfile)
@@ -84,17 +110,28 @@ var Cmd = &cobra.Command{
 			registry.Register(tools.NewDelegate(factory))
 		}
 
+		// Runner options.
+		var runnerOpts []agent.RunnerOption
+		if cfg.Memory.AutoSave {
+			runnerOpts = append(runnerOpts, agent.WithSemanticStore(semanticStore))
+			slog.Info("memory auto-save enabled")
+		}
+		if cfg.Memory.Compaction.Enabled {
+			compactor := memory.NewCompactor(store, database, provider, cfg.Memory.Compaction)
+			runnerOpts = append(runnerOpts, agent.WithCompactor(compactor))
+			slog.Info("compaction enabled", "threshold", cfg.Memory.Compaction.TurnThreshold, "keep_recent", cfg.Memory.Compaction.KeepRecent)
+		}
+
 		// Build orchestrator runner: use "orchestrator" profile if it exists, else default.
 		var runner agent.Runner
 		if p, ok := profiles["orchestrator"]; ok {
-			var opts []agent.RunnerOption
 			if p.SystemPrompt != "" {
-				opts = append(opts, agent.WithSystemPrompt(p.SystemPrompt))
+				runnerOpts = append(runnerOpts, agent.WithSystemPrompt(p.SystemPrompt))
 			}
 			orchestratorRegistry := registry.Scope(p.Tools)
-			runner = agent.NewSimpleRunner(provider, store, mem, orchestratorRegistry, opts...)
+			runner = agent.NewSimpleRunner(provider, store, mem, orchestratorRegistry, runnerOpts...)
 		} else {
-			runner = agent.NewSimpleRunner(provider, store, mem, registry)
+			runner = agent.NewSimpleRunner(provider, store, mem, registry, runnerOpts...)
 		}
 
 		chs := buildChannels(cfg, runner)

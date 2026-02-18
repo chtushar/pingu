@@ -15,6 +15,31 @@ type Config struct {
 	Agents   map[string]*AgentConfig      `toml:"agent"`
 	DB       DBConfig                     `toml:"db"`
 	Services ServicesConfig               `toml:"services"`
+	Memory   MemoryConfig                 `toml:"memory"`
+}
+
+type MemoryConfig struct {
+	Embedding    EmbeddingConfig  `toml:"embedding"`
+	VectorWeight float32          `toml:"vector_weight"`
+	FTSWeight    float32          `toml:"fts_weight"`
+	AutoInject   bool             `toml:"auto_inject"`
+	AutoSave     bool             `toml:"auto_save"`
+	MaxResults   int              `toml:"max_results"`
+	Compaction   CompactionConfig `toml:"compaction"`
+}
+
+type EmbeddingConfig struct {
+	Enabled    bool   `toml:"enabled"`
+	LLM        string `toml:"llm"`
+	Model      string `toml:"model"`
+	Dimensions int    `toml:"dimensions"`
+	CacheSize  int    `toml:"cache_size"`
+}
+
+type CompactionConfig struct {
+	Enabled       bool `toml:"enabled"`
+	TurnThreshold int  `toml:"turn_threshold"`
+	KeepRecent    int  `toml:"keep_recent"`
 }
 
 type ServicesConfig struct {
@@ -64,6 +89,20 @@ func Load() (*Config, error) {
 		},
 		DB: DBConfig{
 			Path: defaultDBPath(),
+		},
+		Memory: MemoryConfig{
+			VectorWeight: 0.7,
+			FTSWeight:    0.3,
+			AutoInject:   true,
+			AutoSave:     true,
+			MaxResults:   5,
+			Embedding: EmbeddingConfig{
+				CacheSize: 10000,
+			},
+			Compaction: CompactionConfig{
+				TurnThreshold: 20,
+				KeepRecent:    5,
+			},
 		},
 	}
 

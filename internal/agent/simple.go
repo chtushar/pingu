@@ -26,13 +26,27 @@ func WithSystemPrompt(s string) RunnerOption {
 	}
 }
 
+func WithCompactor(c *memory.Compactor) RunnerOption {
+	return func(r *SimpleRunner) {
+		r.compactor = c
+	}
+}
+
+func WithSemanticStore(s *memory.SemanticStore) RunnerOption {
+	return func(r *SimpleRunner) {
+		r.semanticStore = s
+	}
+}
+
 type SimpleRunner struct {
-	provider     llm.Provider
-	store        *history.Store
-	memory       memory.Memory
-	registry     *Registry
-	tools        []responses.ToolUnionParam
-	systemPrompt string
+	provider      llm.Provider
+	store         *history.Store
+	memory        memory.Memory
+	registry      *Registry
+	tools         []responses.ToolUnionParam
+	systemPrompt  string
+	compactor     *memory.Compactor
+	semanticStore *memory.SemanticStore
 }
 
 func NewSimpleRunner(provider llm.Provider, store *history.Store, mem memory.Memory, registry *Registry, opts ...RunnerOption) *SimpleRunner {
@@ -89,16 +103,26 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 		slog.Warn("failed to ensure session", "session_id", sessionID, "error", err)
 	}
 
-	input, err := r.memory.Recall(ctx, sessionID)
+	var input []responses.ResponseInputItemUnionParam
+	var err error
+	if cm, ok := r.memory.(memory.ContextualMemory); ok {
+		slog.Debug("agent: using contextual memory recall", "session_id", sessionID)
+		input, err = cm.RecallWithContext(ctx, sessionID, message)
+	} else {
+		slog.Debug("agent: using basic memory recall", "session_id", sessionID)
+		input, err = r.memory.Recall(ctx, sessionID)
+	}
 	if err != nil {
 		slog.Warn("failed to recall memory", "session_id", sessionID, "error", err)
 		input = nil
 	}
+	slog.Debug("agent: memory recalled", "session_id", sessionID, "history_items", len(input))
 
 	input = append(input,
 		responses.ResponseInputItemParamOfMessage(r.systemPrompt, "developer"),
 		responses.ResponseInputItemParamOfMessage(message, "user"),
 	)
+	slog.Debug("agent: input prepared", "total_items", len(input), "tools", len(r.tools))
 
 	var resp *responses.Response
 	iteration := 0
@@ -190,6 +214,19 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 
 	if err := r.store.SaveTurn(ctx, sessionID, message, resp); err != nil {
 		slog.Warn("failed to save turn", "session_id", sessionID, "error", err)
+	}
+
+	if r.semanticStore != nil {
+		go func() {
+			sid := sessionID
+			if _, err := r.semanticStore.Store(context.Background(), &sid, "conversation", message); err != nil {
+				slog.Warn("auto-save memory failed", "session_id", sessionID, "error", err)
+			}
+		}()
+	}
+
+	if r.compactor != nil {
+		go r.compactor.MaybeCompact(context.Background(), sessionID)
 	}
 
 	emit(Event{Type: EventDone})

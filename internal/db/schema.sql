@@ -37,3 +37,45 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_id, created_at);
+
+-- Semantic memory store
+CREATE TABLE IF NOT EXISTS memories (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   TEXT,                                    -- NULL = global/cross-session
+    category     TEXT NOT NULL DEFAULT 'conversation',    -- 'core', 'daily', 'conversation'
+    content      TEXT NOT NULL,
+    embedding    BLOB,                                    -- float32 vector as raw bytes
+    content_hash TEXT,                                    -- SHA-256 for dedup
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+CREATE INDEX IF NOT EXISTS idx_memories_hash ON memories(content_hash);
+
+-- FTS5 for keyword search
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    content, content='memories', content_rowid='id'
+);
+
+-- Triggers to keep FTS5 in sync
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
+END;
+
+-- Embedding cache (avoid redundant API calls)
+CREATE TABLE IF NOT EXISTS embedding_cache (
+    content_hash TEXT PRIMARY KEY,
+    embed_model  TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

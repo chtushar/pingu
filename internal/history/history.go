@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"pingu/internal/db"
@@ -34,6 +35,51 @@ func (s *Store) SaveTurn(ctx context.Context, sessionID, userMessage string, res
 		ResponseJson: raw,
 		Model:        sql.NullString{String: resp.Model, Valid: resp.Model != ""},
 	})
+}
+
+// LoadCompactedHistory loads history using a session's summary for older turns.
+// If a summary exists, it's prepended as a developer message, and only turns
+// after the summary cutoff are loaded in full.
+func (s *Store) LoadCompactedHistory(ctx context.Context, sessionID string) ([]responses.ResponseInputItemUnionParam, error) {
+	session, err := s.q.GetSession(ctx, sessionID)
+	if err != nil {
+		return s.LoadInputHistory(ctx, sessionID)
+	}
+
+	if !session.Summary.Valid || session.Summary.String == "" {
+		return s.LoadInputHistory(ctx, sessionID)
+	}
+
+	var items []responses.ResponseInputItemUnionParam
+	items = append(items, responses.ResponseInputItemParamOfMessage(
+		"[Conversation summary]\n"+session.Summary.String, "developer",
+	))
+
+	// Parse summary_up_to as turn ID.
+	var cutoffID int64
+	if session.SummaryUpTo.Valid {
+		fmt.Sscanf(session.SummaryUpTo.String, "%d", &cutoffID)
+	}
+
+	turns, err := s.q.GetTurnsBySessionAfterID(ctx, db.GetTurnsBySessionAfterIDParams{
+		SessionID: sessionID,
+		ID:        cutoffID,
+	})
+	if err != nil {
+		return items, nil
+	}
+
+	for _, turn := range turns {
+		items = append(items, responses.ResponseInputItemParamOfMessage(turn.UserMessage, "user"))
+		var resp responses.Response
+		if err := json.Unmarshal([]byte(turn.ResponseJson), &resp); err != nil {
+			slog.Warn("skipping turn with invalid response JSON", "turn_id", turn.ID, "error", err)
+			continue
+		}
+		items = append(items, OutputToInput(resp.Output)...)
+	}
+
+	return items, nil
 }
 
 func (s *Store) LoadInputHistory(ctx context.Context, sessionID string) ([]responses.ResponseInputItemUnionParam, error) {

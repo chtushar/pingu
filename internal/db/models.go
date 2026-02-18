@@ -8,6 +8,29 @@ import (
 	"database/sql"
 )
 
+type EmbeddingCache struct {
+	ContentHash string
+	EmbedModel  string
+	Embedding   []byte
+	CreatedAt   string
+	LastUsedAt  string
+}
+
+type MemoriesFt struct {
+	Content string
+}
+
+type Memory struct {
+	ID          int64
+	SessionID   sql.NullString
+	Category    string
+	Content     string
+	Embedding   []byte
+	ContentHash sql.NullString
+	CreatedAt   string
+	UpdatedAt   string
+}
+
 type Message struct {
 	ID         string
 	SessionID  string
