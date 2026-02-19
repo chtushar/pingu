@@ -55,9 +55,9 @@ No Node.js, npm, yarn, or other non-Go tooling is used. All tooling is `go` or `
 ```
 cmd/pingu/            # CLI entry points (cobra subcommands)
   main.go             # wires subcommands + OTel tracing
-  agent/agent.go      # `pingu agent` subcommand
-  gateway/gateway.go  # `pingu gateway` subcommand (main production path)
-  setup/setup.go      # `pingu setup` subcommand
+  agent.go            # `pingu agent` subcommand
+  gateway.go          # `pingu gateway` subcommand (main production path)
+  setup.go            # `pingu setup` subcommand
 
 internal/
   agent/              # Runner interface, ReAct loop (simple.go), factory, tools registry
@@ -130,7 +130,7 @@ Use import aliases only to resolve conflicts or for well-known abbreviations (e.
 | Functional option type | `<Type>Option` | `RunnerOption` |
 | Functional option funcs | `With<FieldName>` | `WithSystemPrompt` |
 | HTTP handler methods | `handle<Route>` | `handleChat`, `handleHealthz` |
-| Package-level cobra vars | `Cmd` | `agent.Cmd`, `gateway.Cmd` |
+| Cobra command vars (main package) | unexported camelCase ending in `Cmd` | `agentCmd`, `gatewayCmd`, `setupCmd` |
 
 ### Types and Interfaces
 
