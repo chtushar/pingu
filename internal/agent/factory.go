@@ -26,7 +26,7 @@ func NewRunnerFactory(provider llm.Provider, store *history.Store, mem memory.Me
 	}
 }
 
-// Build creates a new SimpleRunner scoped to the given profile.
+// Build creates a new ReactRunner scoped to the given profile.
 func (f *RunnerFactory) Build(profileName string) (Runner, error) {
 	profile, ok := f.profiles[profileName]
 	if !ok {
@@ -35,12 +35,12 @@ func (f *RunnerFactory) Build(profileName string) (Runner, error) {
 
 	registry := f.globalRegistry.Scope(profile.Tools)
 
-	var opts []RunnerOption
+	var opts []ReactOption
 	if profile.SystemPrompt != "" {
-		opts = append(opts, WithSystemPrompt(profile.SystemPrompt))
+		opts = append(opts, WithReActSystemPrompt(profile.SystemPrompt))
 	}
 
-	return NewSimpleRunner(f.provider, f.store, f.memory, registry, opts...), nil
+	return NewReactRunner(f.provider, f.store, f.memory, registry, opts...), nil
 }
 
 // Profiles returns the names of all registered profiles.

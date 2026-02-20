@@ -111,14 +111,14 @@ var gatewayCmd = &cobra.Command{
 		}
 
 		// Runner options.
-		var runnerOpts []agent.RunnerOption
+		var runnerOpts []agent.ReactOption
 		if cfg.Memory.AutoSave {
-			runnerOpts = append(runnerOpts, agent.WithSemanticStore(semanticStore))
+			runnerOpts = append(runnerOpts, agent.WithReActSemanticStore(semanticStore))
 			slog.Info("memory auto-save enabled")
 		}
 		if cfg.Memory.Compaction.Enabled {
 			compactor := memory.NewCompactor(store, database, provider, cfg.Memory.Compaction)
-			runnerOpts = append(runnerOpts, agent.WithCompactor(compactor))
+			runnerOpts = append(runnerOpts, agent.WithReActCompactor(compactor))
 			slog.Info("compaction enabled", "threshold", cfg.Memory.Compaction.TurnThreshold, "keep_recent", cfg.Memory.Compaction.KeepRecent)
 		}
 
@@ -126,12 +126,12 @@ var gatewayCmd = &cobra.Command{
 		var runner agent.Runner
 		if p, ok := profiles["orchestrator"]; ok {
 			if p.SystemPrompt != "" {
-				runnerOpts = append(runnerOpts, agent.WithSystemPrompt(p.SystemPrompt))
+				runnerOpts = append(runnerOpts, agent.WithReActSystemPrompt(p.SystemPrompt))
 			}
 			orchestratorRegistry := registry.Scope(p.Tools)
-			runner = agent.NewSimpleRunner(provider, store, mem, orchestratorRegistry, runnerOpts...)
+			runner = agent.NewReactRunner(provider, store, mem, orchestratorRegistry, runnerOpts...)
 		} else {
-			runner = agent.NewSimpleRunner(provider, store, mem, registry, runnerOpts...)
+			runner = agent.NewReactRunner(provider, store, mem, registry, runnerOpts...)
 		}
 
 		chs := buildChannels(cfg, runner)
