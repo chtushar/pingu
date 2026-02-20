@@ -123,8 +123,13 @@ func (r *ReactRunner) Run(ctx context.Context, sessionID string, message string,
 	return nil
 }
 
-// loop is the core ReAct cycle: Plan → Execute → Observe, repeated until the
-// agent decides the task is complete or the context is cancelled.
+// loop is the core ReAct cycle. Each iteration is a single LLM call where the
+// model reasons about the current state and picks actions in one step. When a
+// tool fails, the error goes back into context and the model sees it on the
+// next iteration, naturally adapting its approach.
+//
+// The loop exits only when the LLM returns no tool calls (task complete) or
+// the context is cancelled.
 func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, input []responses.ResponseInputItemUnionParam, emit func(Event)) (*responses.Response, error) {
 	var resp *responses.Response
 	iteration := 0
@@ -135,28 +140,42 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 			return nil, err
 		}
 
-		// — Plan: call the LLM without tools to reason about what to do next. —
-		planResp, err := r.chat(ctx, parentSC, iteration, "plan", input, nil)
+		// — Think + Act: single LLM call with tools. The model reasons about
+		// the current state (including any prior tool errors) and decides
+		// what to do next, all in one turn. —
+		llmCtx, llmSpan := trace.Tracer().Start(ctx, "llm.react",
+			oteltrace.WithAttributes(attribute.Int("llm.iteration", iteration)),
+		)
+
+		slog.Debug("llm.react span started",
+			"trace_id", llmSpan.SpanContext().TraceID(),
+			"span_id", llmSpan.SpanContext().SpanID(),
+			"parent_span_id", parentSC.SpanID(),
+			"iteration", iteration,
+		)
+
+		var err error
+		resp, err = r.provider.ChatStream(llmCtx, input, r.tools, func(token string) {})
 		if err != nil {
+			llmSpan.RecordError(err)
+			llmSpan.SetStatus(codes.Error, err.Error())
+			llmSpan.End()
 			emit(Event{Type: EventError, Data: err.Error()})
 			return nil, err
 		}
+
+		llmSpan.SetAttributes(
+			attribute.String("llm.model", string(resp.Model)),
+			attribute.Int64("llm.input_tokens", resp.Usage.InputTokens),
+			attribute.Int64("llm.output_tokens", resp.Usage.OutputTokens),
+		)
+		llmSpan.End()
 		iteration++
 
-		// Add the plan to the conversation so the execute step can see it.
-		input = append(input, history.OutputToInput(planResp.Output)...)
-
-		// — Execute: call the LLM with tools to act on the plan. —
-		resp, err = r.chat(ctx, parentSC, iteration, "execute", input, r.tools)
-		if err != nil {
-			emit(Event{Type: EventError, Data: err.Error()})
-			return nil, err
-		}
-		iteration++
-
+		// Feed the LLM's output (including its reasoning) back into context.
 		input = append(input, history.OutputToInput(resp.Output)...)
 
-		// Collect tool calls from the response.
+		// Collect tool calls.
 		var calls []responses.ResponseOutputItemUnion
 		for _, item := range resp.Output {
 			if item.Type == "function_call" {
@@ -169,40 +188,11 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 			return resp, nil
 		}
 
-		// — Observe: execute tools and feed results back. —
+		// — Observe: execute tools, feed results (including errors) back so
+		// the next iteration can reason about them and adapt. —
 		results := r.act(ctx, calls, emit)
 		input = append(input, results...)
 	}
-}
-
-// chat makes a single LLM call with tracing. Pass nil tools for a plan-only call.
-func (r *ReactRunner) chat(ctx context.Context, parentSC oteltrace.SpanContext, iteration int, phase string, input []responses.ResponseInputItemUnionParam, tools []responses.ToolUnionParam) (*responses.Response, error) {
-	llmCtx, llmSpan := trace.Tracer().Start(ctx, "llm."+phase,
-		oteltrace.WithAttributes(attribute.Int("llm.iteration", iteration)),
-	)
-
-	slog.Debug("llm."+phase+" span started",
-		"trace_id", llmSpan.SpanContext().TraceID(),
-		"span_id", llmSpan.SpanContext().SpanID(),
-		"parent_span_id", parentSC.SpanID(),
-		"iteration", iteration,
-	)
-
-	resp, err := r.provider.ChatStream(llmCtx, input, tools, func(token string) {})
-	if err != nil {
-		llmSpan.RecordError(err)
-		llmSpan.SetStatus(codes.Error, err.Error())
-		llmSpan.End()
-		return nil, err
-	}
-
-	llmSpan.SetAttributes(
-		attribute.String("llm.model", string(resp.Model)),
-		attribute.Int64("llm.input_tokens", resp.Usage.InputTokens),
-		attribute.Int64("llm.output_tokens", resp.Usage.OutputTokens),
-	)
-	llmSpan.End()
-	return resp, nil
 }
 
 // act executes tool calls in parallel, emitting events for each, and returns

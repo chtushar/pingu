@@ -47,6 +47,8 @@ func (f *File) Execute(ctx context.Context, input string) (string, error) {
 		return "", fmt.Errorf("parsing file input: %w", err)
 	}
 
+	args.Path = expandHome(args.Path)
+
 	switch args.Action {
 	case "read":
 		slog.Debug("file: reading", "path", args.Path)
