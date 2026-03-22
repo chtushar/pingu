@@ -153,7 +153,9 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 		)
 
 		var err error
-		resp, err = r.provider.ChatStream(llmCtx, input, r.tools, func(token string) {})
+		resp, err = r.provider.ChatStream(llmCtx, input, r.tools, func(token string) {
+			emit(Event{Type: EventToken, Data: token})
+		})
 		if err != nil {
 			llmSpan.RecordError(err)
 			llmSpan.SetStatus(codes.Error, err.Error())

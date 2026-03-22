@@ -271,8 +271,17 @@ func (t *Telegram) runText(ctx context.Context, chatID int64, userID int64, text
 	sessionID := fmt.Sprintf("telegram:%d", chatID)
 	var response strings.Builder
 	err := t.runner.Run(ctx, sessionID, text, func(e agent.Event) {
-		if e.Type == agent.EventToken {
-			response.WriteString(e.Data.(string))
+		switch e.Type {
+		case agent.EventToken:
+			if s, ok := e.Data.(string); ok {
+				response.WriteString(s)
+			}
+		case agent.EventToolCall:
+			slog.Debug("telegram: tool call", "chat_id", chatID, "data", e.Data)
+		case agent.EventToolResult:
+			slog.Debug("telegram: tool result", "chat_id", chatID, "data", e.Data)
+		case agent.EventError:
+			slog.Error("telegram: agent error event", "chat_id", chatID, "data", e.Data)
 		}
 	})
 	if err != nil {
@@ -281,10 +290,15 @@ func (t *Telegram) runText(ctx context.Context, chatID int64, userID int64, text
 		return
 	}
 
-	if reply := response.String(); reply != "" {
+	reply := response.String()
+	slog.Debug("telegram: run completed", "chat_id", chatID, "reply_len", len(reply))
+
+	if reply != "" {
 		if err := t.sendMessage(chatID, reply); err != nil {
 			slog.Error("telegram: failed to send message", "chat_id", chatID, "error", err)
 		}
+	} else {
+		slog.Warn("telegram: agent produced no response tokens", "chat_id", chatID)
 	}
 }
 
