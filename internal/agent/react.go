@@ -9,14 +9,17 @@ import (
 	"pingu/internal/trace"
 	"sync"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/responses"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-const defaultReActSystemPrompt = "You must use the message tool to communicate with the user. Do not produce raw text output."
+const defaultReActSystemPrompt = `You must use the message tool to communicate with the user. Do not produce raw text output.
+
+For long-running tasks, send periodic progress updates via the message tool so the user knows what you are doing. For example:
+- Before starting a multi-step task, briefly share your plan.
+- After completing a significant step, report what was done and what comes next.
+- If a tool call fails, explain what went wrong and what you will try instead.`
 
 type ReactOption func(*ReactRunner)
 
@@ -40,7 +43,7 @@ type ReactRunner struct {
 	store         *history.Store
 	memory        memory.Memory
 	registry      *Registry
-	tools         []responses.ToolUnionParam
+	tools         []llm.ToolDefinition
 	systemPrompt  string
 	compactor     *memory.Compactor
 	semanticStore *memory.SemanticStore
@@ -61,13 +64,11 @@ func NewReactRunner(provider llm.Provider, store *history.Store, mem memory.Memo
 
 	for _, t := range registry.All() {
 		schema, _ := t.InputSchema().(map[string]any)
-		r.tools = append(r.tools, responses.ToolUnionParam{
-			OfFunction: &responses.FunctionToolParam{
-				Name:        t.Name(),
-				Description: openai.String(t.Description()),
-				Parameters:  schema,
-				Strict:      openai.Bool(true),
-			},
+		r.tools = append(r.tools, llm.ToolDefinition{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  schema,
+			Strict:      true,
 		})
 	}
 
@@ -106,8 +107,8 @@ func (r *ReactRunner) Run(ctx context.Context, sessionID string, message string,
 	slog.Debug("agent.react: memory recalled", "session_id", sessionID, "history_items", len(input))
 
 	input = append(input,
-		responses.ResponseInputItemParamOfMessage(r.systemPrompt, "developer"),
-		responses.ResponseInputItemParamOfMessage(message, "user"),
+		llm.NewMessage(r.systemPrompt, llm.RoleDeveloper),
+		llm.NewMessage(message, llm.RoleUser),
 	)
 
 	resp, err := r.loop(ctx, span.SpanContext(), input, emit)
@@ -130,8 +131,8 @@ func (r *ReactRunner) Run(ctx context.Context, sessionID string, message string,
 //
 // The loop exits only when the LLM returns no tool calls (task complete) or
 // the context is cancelled.
-func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, input []responses.ResponseInputItemUnionParam, emit func(Event)) (*responses.Response, error) {
-	var resp *responses.Response
+func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, input []llm.InputItem, emit func(Event)) (*llm.Response, error) {
+	var resp *llm.Response
 	iteration := 0
 
 	for {
@@ -140,9 +141,6 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 			return nil, err
 		}
 
-		// — Think + Act: single LLM call with tools. The model reasons about
-		// the current state (including any prior tool errors) and decides
-		// what to do next, all in one turn. —
 		llmCtx, llmSpan := trace.Tracer().Start(ctx, "llm.react",
 			oteltrace.WithAttributes(attribute.Int("llm.iteration", iteration)),
 		)
@@ -165,18 +163,18 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 		}
 
 		llmSpan.SetAttributes(
-			attribute.String("llm.model", string(resp.Model)),
-			attribute.Int64("llm.input_tokens", resp.Usage.InputTokens),
-			attribute.Int64("llm.output_tokens", resp.Usage.OutputTokens),
+			attribute.String("llm.model", resp.Model),
+			attribute.Int64("llm.input_tokens", resp.InputTokens),
+			attribute.Int64("llm.output_tokens", resp.OutputTokens),
 		)
 		llmSpan.End()
 		iteration++
 
-		// Feed the LLM's output (including its reasoning) back into context.
-		input = append(input, history.OutputToInput(resp.Output)...)
+		// Feed the LLM's output back into context.
+		input = append(input, llm.OutputToInput(resp.Output)...)
 
 		// Collect tool calls.
-		var calls []responses.ResponseOutputItemUnion
+		var calls []llm.OutputItem
 		for _, item := range resp.Output {
 			if item.Type == "function_call" {
 				calls = append(calls, item)
@@ -188,8 +186,7 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 			return resp, nil
 		}
 
-		// — Observe: execute tools, feed results (including errors) back so
-		// the next iteration can reason about them and adapt. —
+		// Execute tools, feed results back so the next iteration can reason about them.
 		results := r.act(ctx, calls, emit)
 		input = append(input, results...)
 	}
@@ -197,51 +194,49 @@ func (r *ReactRunner) loop(ctx context.Context, parentSC oteltrace.SpanContext, 
 
 // act executes tool calls in parallel, emitting events for each, and returns
 // the results formatted as input items for the next LLM turn.
-func (r *ReactRunner) act(ctx context.Context, calls []responses.ResponseOutputItemUnion, emit func(Event)) []responses.ResponseInputItemUnionParam {
+func (r *ReactRunner) act(ctx context.Context, calls []llm.OutputItem, emit func(Event)) []llm.InputItem {
 	for _, call := range calls {
-		fc := call.AsFunctionCall()
 		emit(Event{Type: EventToolCall, Data: map[string]string{
-			"name":      fc.Name,
-			"arguments": fc.Arguments,
+			"name":      call.Name,
+			"arguments": call.Arguments,
 		}})
 	}
 
 	var wg sync.WaitGroup
-	results := make([]responses.ResponseInputItemUnionParam, len(calls))
+	results := make([]llm.InputItem, len(calls))
 
 	for i, call := range calls {
 		wg.Add(1)
-		go func(i int, call responses.ResponseOutputItemUnion) {
+		go func(i int, call llm.OutputItem) {
 			defer wg.Done()
-			fc := call.AsFunctionCall()
 
-			tool, ok := r.registry.Get(fc.Name)
+			tool, ok := r.registry.Get(call.Name)
 			if !ok {
-				slog.Warn("unknown tool call", "name", fc.Name)
-				results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: unknown tool")
+				slog.Warn("unknown tool call", "name", call.Name)
+				results[i] = llm.NewFunctionCallOutput(call.CallID, "error: unknown tool")
 				emit(Event{Type: EventToolResult, Data: map[string]string{
-					"name":    fc.Name,
+					"name":    call.Name,
 					"content": "error: unknown tool",
 				}})
 				return
 			}
 
 			traced := withTrace(tool)
-			result, err := traced.Execute(ctx, fc.Arguments)
+			result, err := traced.Execute(ctx, call.Arguments)
 			if err != nil {
-				slog.Warn("tool execution failed", "name", fc.Name, "error", err)
+				slog.Warn("tool execution failed", "name", call.Name, "error", err)
 				errMsg := "error: " + err.Error()
-				results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, errMsg)
+				results[i] = llm.NewFunctionCallOutput(call.CallID, errMsg)
 				emit(Event{Type: EventToolResult, Data: map[string]string{
-					"name":    fc.Name,
+					"name":    call.Name,
 					"content": errMsg,
 				}})
 				return
 			}
 
-			results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, result)
+			results[i] = llm.NewFunctionCallOutput(call.CallID, result)
 			emit(Event{Type: EventToolResult, Data: map[string]string{
-				"name":    fc.Name,
+				"name":    call.Name,
 				"content": result,
 			}})
 		}(i, call)
@@ -252,7 +247,7 @@ func (r *ReactRunner) act(ctx context.Context, calls []responses.ResponseOutputI
 }
 
 // recall loads conversation history and relevant memories.
-func (r *ReactRunner) recall(ctx context.Context, sessionID, message string) ([]responses.ResponseInputItemUnionParam, error) {
+func (r *ReactRunner) recall(ctx context.Context, sessionID, message string) ([]llm.InputItem, error) {
 	if cm, ok := r.memory.(memory.ContextualMemory); ok {
 		slog.Debug("agent.react: using contextual memory recall", "session_id", sessionID)
 		return cm.RecallWithContext(ctx, sessionID, message)
@@ -262,7 +257,7 @@ func (r *ReactRunner) recall(ctx context.Context, sessionID, message string) ([]
 }
 
 // persist saves the turn and triggers background memory operations.
-func (r *ReactRunner) persist(ctx context.Context, sessionID, message string, resp *responses.Response) {
+func (r *ReactRunner) persist(ctx context.Context, sessionID, message string, resp *llm.Response) {
 	if err := r.store.SaveTurn(ctx, sessionID, message, resp); err != nil {
 		slog.Warn("failed to save turn", "session_id", sessionID, "error", err)
 	}

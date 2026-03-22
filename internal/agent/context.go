@@ -8,6 +8,8 @@ const (
 	sessionIDKey contextKey = iota
 	delegationDepthKey
 	emitKey
+	userIDKey
+	platformKey
 )
 
 func ContextWithSessionID(ctx context.Context, id string) context.Context {
@@ -41,4 +43,26 @@ func EmitFromContext(ctx context.Context) func(Event) {
 		return v
 	}
 	return nil
+}
+
+func ContextWithUserID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, userIDKey, id)
+}
+
+func UserIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(userIDKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func ContextWithPlatform(ctx context.Context, platform string) context.Context {
+	return context.WithValue(ctx, platformKey, platform)
+}
+
+func PlatformFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(platformKey).(string); ok {
+		return v
+	}
+	return ""
 }

@@ -8,8 +8,7 @@ import (
 	"log/slog"
 
 	"pingu/internal/db"
-
-	"github.com/openai/openai-go/v3/responses"
+	"pingu/internal/llm"
 )
 
 type Store struct {
@@ -27,12 +26,15 @@ func (s *Store) EnsureSession(ctx context.Context, sessionID, channel string) er
 	})
 }
 
-func (s *Store) SaveTurn(ctx context.Context, sessionID, userMessage string, resp *responses.Response) error {
-	raw := resp.RawJSON()
+func (s *Store) SaveTurn(ctx context.Context, sessionID, userMessage string, resp *llm.Response) error {
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		return fmt.Errorf("marshal response: %w", err)
+	}
 	return s.q.InsertTurn(ctx, db.InsertTurnParams{
 		SessionID:    sessionID,
 		UserMessage:  userMessage,
-		ResponseJson: raw,
+		ResponseJson: string(raw),
 		Model:        sql.NullString{String: resp.Model, Valid: resp.Model != ""},
 	})
 }
@@ -40,7 +42,7 @@ func (s *Store) SaveTurn(ctx context.Context, sessionID, userMessage string, res
 // LoadCompactedHistory loads history using a session's summary for older turns.
 // If a summary exists, it's prepended as a developer message, and only turns
 // after the summary cutoff are loaded in full.
-func (s *Store) LoadCompactedHistory(ctx context.Context, sessionID string) ([]responses.ResponseInputItemUnionParam, error) {
+func (s *Store) LoadCompactedHistory(ctx context.Context, sessionID string) ([]llm.InputItem, error) {
 	session, err := s.q.GetSession(ctx, sessionID)
 	if err != nil {
 		return s.LoadInputHistory(ctx, sessionID)
@@ -50,9 +52,9 @@ func (s *Store) LoadCompactedHistory(ctx context.Context, sessionID string) ([]r
 		return s.LoadInputHistory(ctx, sessionID)
 	}
 
-	var items []responses.ResponseInputItemUnionParam
-	items = append(items, responses.ResponseInputItemParamOfMessage(
-		"[Conversation summary]\n"+session.Summary.String, "developer",
+	var items []llm.InputItem
+	items = append(items, llm.NewMessage(
+		"[Conversation summary]\n"+session.Summary.String, llm.RoleDeveloper,
 	))
 
 	// Parse summary_up_to as turn ID.
@@ -70,74 +72,36 @@ func (s *Store) LoadCompactedHistory(ctx context.Context, sessionID string) ([]r
 	}
 
 	for _, turn := range turns {
-		items = append(items, responses.ResponseInputItemParamOfMessage(turn.UserMessage, "user"))
-		var resp responses.Response
+		items = append(items, llm.NewMessage(turn.UserMessage, llm.RoleUser))
+		var resp llm.Response
 		if err := json.Unmarshal([]byte(turn.ResponseJson), &resp); err != nil {
 			slog.Warn("skipping turn with invalid response JSON", "turn_id", turn.ID, "error", err)
 			continue
 		}
-		items = append(items, OutputToInput(resp.Output)...)
+		items = append(items, llm.OutputToInput(resp.Output)...)
 	}
 
 	return items, nil
 }
 
-func (s *Store) LoadInputHistory(ctx context.Context, sessionID string) ([]responses.ResponseInputItemUnionParam, error) {
+func (s *Store) LoadInputHistory(ctx context.Context, sessionID string) ([]llm.InputItem, error) {
 	turns, err := s.q.GetTurnsBySession(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	var items []responses.ResponseInputItemUnionParam
+	var items []llm.InputItem
 	for _, turn := range turns {
-		// Add user message.
-		items = append(items, responses.ResponseInputItemParamOfMessage(turn.UserMessage, "user"))
+		items = append(items, llm.NewMessage(turn.UserMessage, llm.RoleUser))
 
-		// Deserialize the stored response.
-		var resp responses.Response
+		var resp llm.Response
 		if err := json.Unmarshal([]byte(turn.ResponseJson), &resp); err != nil {
 			slog.Warn("skipping turn with invalid response JSON", "turn_id", turn.ID, "error", err)
 			continue
 		}
 
-		// Convert output items to input items.
-		items = append(items, OutputToInput(resp.Output)...)
+		items = append(items, llm.OutputToInput(resp.Output)...)
 	}
 
 	return items, nil
-}
-
-// OutputToInput converts response output items into input item params
-// for the next API call. Each output type's ToParam() does a lossless
-// round-trip via RawJSON.
-func OutputToInput(output []responses.ResponseOutputItemUnion) []responses.ResponseInputItemUnionParam {
-	var items []responses.ResponseInputItemUnionParam
-	for _, item := range output {
-		switch item.Type {
-		case "message":
-			v := item.AsMessage().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfOutputMessage: &v})
-		case "function_call":
-			v := item.AsFunctionCall().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfFunctionCall: &v})
-		case "reasoning":
-			v := item.AsReasoning().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfReasoning: &v})
-		case "file_search_call":
-			v := item.AsFileSearchCall().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfFileSearchCall: &v})
-		case "web_search_call":
-			v := item.AsWebSearchCall().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfWebSearchCall: &v})
-		case "computer_call":
-			v := item.AsComputerCall().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfComputerCall: &v})
-		case "code_interpreter_call":
-			v := item.AsCodeInterpreterCall().ToParam()
-			items = append(items, responses.ResponseInputItemUnionParam{OfCodeInterpreterCall: &v})
-		default:
-			slog.Debug("skipping unknown output item type", "type", item.Type)
-		}
-	}
-	return items
 }

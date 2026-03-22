@@ -31,11 +31,18 @@ func (otelErrorHandler) Handle(err error) {
 func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error, err error) {
 	otel.SetErrorHandler(otelErrorHandler{})
 
+	// If no endpoint is configured, set up a no-op provider so tracing calls
+	// work but nothing is exported.
+	if cfg.Endpoint == "" {
+		tp := sdktrace.NewTracerProvider()
+		otel.SetTracerProvider(tp)
+		otel.SetTextMapPropagator(propagation.TraceContext{})
+		return tp.Shutdown, nil
+	}
+
 	opts := []otlptracehttp.Option{
 		otlptracehttp.WithInsecure(),
-	}
-	if cfg.Endpoint != "" {
-		opts = append(opts, otlptracehttp.WithEndpoint(cfg.Endpoint))
+		otlptracehttp.WithEndpoint(cfg.Endpoint),
 	}
 	if cfg.URLPath != "" {
 		opts = append(opts, otlptracehttp.WithURLPath(cfg.URLPath))
@@ -65,9 +72,10 @@ func Init(ctx context.Context, cfg Config) (shutdown func(context.Context) error
 		return nil, err
 	}
 
-	// Use SimpleSpanProcessor for synchronous export (surfaces errors immediately).
+	// Use BatchSpanProcessor for async export — won't block or spam errors
+	// when the collector is unavailable.
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSyncer(exporter),
+		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)

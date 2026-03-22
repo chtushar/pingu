@@ -16,6 +16,19 @@ type Config struct {
 	DB       DBConfig                     `toml:"db"`
 	Services ServicesConfig               `toml:"services"`
 	Memory   MemoryConfig                 `toml:"memory"`
+	Audio    AudioConfig                  `toml:"audio"`
+	Trace    TraceConfig                  `toml:"trace"`
+}
+
+type TraceConfig struct {
+	Endpoint string `toml:"endpoint"` // e.g. "localhost:4318"; empty = disabled
+	URLPath  string `toml:"url_path"`
+	APIKey   string `toml:"api_key"`
+}
+
+type AudioConfig struct {
+	WhisperModel    string `toml:"whisper_model"`
+	WhisperModelDir string `toml:"whisper_model_dir"`
 }
 
 type MemoryConfig struct {
@@ -89,6 +102,9 @@ func Load() (*Config, error) {
 		},
 		DB: DBConfig{
 			Path: defaultDBPath(),
+		},
+		Audio: AudioConfig{
+			WhisperModel: "base",
 		},
 		Memory: MemoryConfig{
 			VectorWeight: 0.7,

@@ -5,19 +5,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"pingu/internal/agent"
+	"pingu/internal/audio"
 	"strings"
 	"time"
 )
 
 const (
 	telegramAPIBase      = "https://api.telegram.org/bot%s"
+	telegramFileBase     = "https://api.telegram.org/file/bot%s/%s"
 	telegramSendMsg      = "/sendMessage"
 	telegramChatAction   = "/sendChatAction"
 	telegramGetUpdates   = "/getUpdates"
 	telegramGetMe        = "/getMe"
+	telegramGetFile      = "/getFile"
 	telegramActionTyping = "typing"
 	telegramPollTimeout  = 30 // seconds, Telegram long poll timeout
 )
@@ -25,12 +31,13 @@ const (
 type Telegram struct {
 	botToken     string
 	runner       agent.Runner
+	transcriber  audio.Transcriber // nil = audio not supported
 	apiURL       string
 	offset       int64
 	allowedUsers map[int64]bool
 }
 
-func NewTelegram(botToken string, allowedUsers []int64, runner agent.Runner) *Telegram {
+func NewTelegram(botToken string, allowedUsers []int64, runner agent.Runner, transcriber audio.Transcriber) *Telegram {
 	allowed := make(map[int64]bool, len(allowedUsers))
 	for _, id := range allowedUsers {
 		allowed[id] = true
@@ -38,6 +45,7 @@ func NewTelegram(botToken string, allowedUsers []int64, runner agent.Runner) *Te
 	return &Telegram{
 		botToken:     botToken,
 		runner:       runner,
+		transcriber:  transcriber,
 		apiURL:       fmt.Sprintf(telegramAPIBase, botToken),
 		allowedUsers: allowed,
 	}
@@ -74,9 +82,22 @@ type telegramUpdate struct {
 }
 
 type telegramMessage struct {
-	From telegramUser `json:"from"`
-	Chat telegramChat `json:"chat"`
-	Text string       `json:"text"`
+	From  telegramUser   `json:"from"`
+	Chat  telegramChat   `json:"chat"`
+	Text  string         `json:"text"`
+	Voice *telegramVoice `json:"voice"`
+	Audio *telegramAudio `json:"audio"`
+}
+
+type telegramVoice struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+}
+
+type telegramAudio struct {
+	FileID   string `json:"file_id"`
+	Duration int    `json:"duration"`
+	MimeType string `json:"mime_type"`
 }
 
 type telegramUser struct {
@@ -95,6 +116,13 @@ type telegramSendRequest struct {
 type telegramGetUpdatesResponse struct {
 	OK     bool             `json:"ok"`
 	Result []telegramUpdate `json:"result"`
+}
+
+type telegramGetFileResponse struct {
+	OK     bool `json:"ok"`
+	Result struct {
+		FilePath string `json:"file_path"`
+	} `json:"result"`
 }
 
 func (t *Telegram) getUpdates(ctx context.Context) ([]telegramUpdate, error) {
@@ -127,22 +155,118 @@ func (t *Telegram) getUpdates(ctx context.Context) ([]telegramUpdate, error) {
 }
 
 func (t *Telegram) handleUpdate(ctx context.Context, update telegramUpdate) {
-	if update.Message == nil || update.Message.Text == "" {
+	if update.Message == nil {
 		return
 	}
 
-	if len(t.allowedUsers) > 0 && !t.allowedUsers[update.Message.From.ID] {
-		slog.Warn("telegram: unauthorized user", "user_id", update.Message.From.ID)
-		t.sendMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
+	msg := update.Message
+	chatID := msg.Chat.ID
+	hasText := msg.Text != ""
+	hasAudio := msg.Voice != nil || msg.Audio != nil
+
+	if !hasText && !hasAudio {
 		return
 	}
 
-	chatID := update.Message.Chat.ID
-	text := update.Message.Text
+	if len(t.allowedUsers) > 0 && !t.allowedUsers[msg.From.ID] {
+		slog.Warn("telegram: unauthorized user", "user_id", msg.From.ID)
+		t.sendMessage(chatID, "Sorry, you are not authorized to use this bot.")
+		return
+	}
 
+	userID := msg.From.ID
+
+	if hasAudio && t.transcriber != nil {
+		fileID := ""
+		if msg.Voice != nil {
+			fileID = msg.Voice.FileID
+		} else {
+			fileID = msg.Audio.FileID
+		}
+		t.processAudio(ctx, chatID, userID, fileID)
+		return
+	}
+
+	if !hasText {
+		return
+	}
+
+	t.runText(ctx, chatID, userID, msg.Text)
+}
+
+// processAudio downloads, converts, and transcribes an audio file.
+// On success the transcribed text is passed to the runner.
+// On failure the error and file paths are passed to the runner so the
+// agent can use its Shell tool to diagnose and fix the issue.
+func (t *Telegram) processAudio(ctx context.Context, chatID, userID int64, fileID string) {
+	t.sendTyping(chatID)
+
+	filePath, err := t.getFile(fileID)
+	if err != nil {
+		slog.Error("telegram: getFile failed", "error", err)
+		t.sendMessage(chatID, "Sorry, could not retrieve the audio file.")
+		return
+	}
+
+	localPath, err := t.downloadFile(filePath)
+	if err != nil {
+		slog.Error("telegram: download failed", "error", err)
+		t.sendMessage(chatID, "Sorry, could not download the audio file.")
+		return
+	}
+	// Don't defer remove — the agent may need the file if processing fails.
+
+	wavPath := localPath + ".wav"
+	if err := audio.ConvertToWav(localPath, wavPath); err != nil {
+		slog.Error("telegram: ffmpeg convert failed", "error", err)
+		prompt := fmt.Sprintf(
+			"[Voice message received]\nThe user sent a voice message. I downloaded the audio file to: %s\n"+
+				"Converting to WAV failed with error: %s\n"+
+				"Please fix the issue (e.g. install ffmpeg via shell), convert the file to WAV, "+
+				"transcribe it, and respond to what the user said. "+
+				"Clean up any temp files when done.",
+			localPath, err,
+		)
+		t.runText(ctx, chatID, userID, prompt)
+		return
+	}
+
+	text, err := t.transcriber.Transcribe(ctx, wavPath)
+	if err != nil {
+		slog.Error("telegram: transcription failed", "error", err)
+		prompt := fmt.Sprintf(
+			"[Voice message received]\nThe user sent a voice message. I downloaded the audio to: %s and converted it to WAV at: %s\n"+
+				"Transcription failed with error: %s\n"+
+				"Please fix the issue (e.g. install whisper via `pip install openai-whisper`), "+
+				"transcribe the WAV file, and respond to what the user said. "+
+				"Clean up any temp files when done.",
+			localPath, wavPath, err,
+		)
+		t.runText(ctx, chatID, userID, prompt)
+		return
+	}
+
+	// Happy path — clean up temp files ourselves.
+	os.Remove(localPath)
+	os.Remove(wavPath)
+
+	if text == "" {
+		t.sendMessage(chatID, "Could not detect any speech in the audio.")
+		return
+	}
+
+	slog.Debug("telegram: transcribed audio", "chat_id", chatID, "text", text)
+	t.runText(ctx, chatID, userID, text)
+}
+
+// runText sends text through the agent runner and replies with the result.
+func (t *Telegram) runText(ctx context.Context, chatID int64, userID int64, text string) {
 	slog.Debug("telegram: received message", "chat_id", chatID, "text", text)
 
 	t.sendTyping(chatID)
+
+	ctx = agent.ContextWithUserID(ctx, fmt.Sprintf("%d", userID))
+	ctx = agent.ContextWithPlatform(ctx, "telegram")
 
 	sessionID := fmt.Sprintf("telegram:%d", chatID)
 	var response strings.Builder
@@ -162,6 +286,55 @@ func (t *Telegram) handleUpdate(ctx context.Context, update telegramUpdate) {
 			slog.Error("telegram: failed to send message", "chat_id", chatID, "error", err)
 		}
 	}
+}
+
+// getFile calls the Telegram getFile API and returns the file_path.
+func (t *Telegram) getFile(fileID string) (string, error) {
+	body, _ := json.Marshal(map[string]any{"file_id": fileID})
+	resp, err := http.Post(t.apiURL+telegramGetFile, "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	var result telegramGetFileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if !result.OK {
+		return "", fmt.Errorf("telegram getFile returned ok=false")
+	}
+	return result.Result.FilePath, nil
+}
+
+// downloadFile downloads a file from Telegram servers to a temp directory.
+func (t *Telegram) downloadFile(filePath string) (string, error) {
+	url := fmt.Sprintf(telegramFileBase, t.botToken, filePath)
+	resp, err := http.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("telegram file download returned %d", resp.StatusCode)
+	}
+
+	ext := filepath.Ext(filePath)
+	if ext == "" {
+		ext = ".ogg"
+	}
+	tmp, err := os.CreateTemp("", "tg-audio-*"+ext)
+	if err != nil {
+		return "", err
+	}
+	defer tmp.Close()
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return tmp.Name(), nil
 }
 
 func (t *Telegram) sendTyping(chatID int64) {

@@ -9,6 +9,7 @@ import (
 type chatRequest struct {
 	SessionID string `json:"session_id"`
 	Message   string `json:"message"`
+	UserID    string `json:"user_id"`
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -22,10 +23,16 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ctx := r.Context()
+	if req.UserID != "" {
+		ctx = agent.ContextWithUserID(ctx, req.UserID)
+	}
+	ctx = agent.ContextWithPlatform(ctx, "gateway")
+
 	sse := NewSSEWriter(w)
 	var sentError bool
 
-	err := s.runner.Run(r.Context(), req.SessionID, req.Message, func(ev agent.Event) {
+	err := s.runner.Run(ctx, req.SessionID, req.Message, func(ev agent.Event) {
 		switch ev.Type {
 		case agent.EventToken:
 			sse.Send("token", map[string]string{"content": ev.Data.(string)})

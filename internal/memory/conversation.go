@@ -4,7 +4,7 @@ import (
 	"context"
 	"pingu/internal/history"
 
-	"github.com/openai/openai-go/v3/responses"
+	"pingu/internal/llm"
 )
 
 // ConversationMemory recalls the full conversation history for a session.
@@ -16,6 +16,6 @@ func NewConversationMemory(store *history.Store) *ConversationMemory {
 	return &ConversationMemory{store: store}
 }
 
-func (m *ConversationMemory) Recall(ctx context.Context, sessionID string) ([]responses.ResponseInputItemUnionParam, error) {
+func (m *ConversationMemory) Recall(ctx context.Context, sessionID string) ([]llm.InputItem, error) {
 	return m.store.LoadInputHistory(ctx, sessionID)
 }

@@ -19,9 +19,9 @@ func main() {
 
 	traceCfg := trace.Config{}
 	if cfg, err := config.Load(); err == nil {
-		if llmCfg, ok := cfg.LLMs[cfg.DefaultLLM]; ok {
-			traceCfg.APIKey = llmCfg.APIKey
-		}
+		traceCfg.Endpoint = cfg.Trace.Endpoint
+		traceCfg.URLPath = cfg.Trace.URLPath
+		traceCfg.APIKey = cfg.Trace.APIKey
 	}
 
 	shutdown, err := trace.Init(ctx, traceCfg)

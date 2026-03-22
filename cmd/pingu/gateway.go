@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"pingu/internal/agent"
+	"pingu/internal/audio"
 	"pingu/internal/channels"
 	"pingu/internal/config"
 	"pingu/internal/db"
@@ -156,6 +157,11 @@ func init() {
 }
 
 func buildChannels(cfg *config.Config, runner agent.Runner) []channels.Channel {
+	transcriber := &audio.WhisperCLI{
+		ModelPath: cfg.Audio.WhisperModel,
+		ModelDir:  cfg.Audio.WhisperModelDir,
+	}
+
 	var chs []channels.Channel
 	for name, ch := range cfg.Channels {
 		if !ch.Enabled {
@@ -171,7 +177,7 @@ func buildChannels(cfg *config.Config, runner agent.Runner) []channels.Channel {
 					}
 				}
 			}
-			chs = append(chs, channels.NewTelegram(ch.Settings["bot_token"], allowedUsers, runner))
+			chs = append(chs, channels.NewTelegram(ch.Settings["bot_token"], allowedUsers, runner, transcriber))
 			slog.Info("channel registered", "name", name, "type", ch.Type)
 		default:
 			slog.Warn("unknown channel type", "name", name, "type", ch.Type)

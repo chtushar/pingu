@@ -12,8 +12,6 @@ import (
 	"pingu/internal/db"
 	"pingu/internal/history"
 	"pingu/internal/llm"
-
-	"github.com/openai/openai-go/v3/responses"
 )
 
 // Compactor summarizes older conversation turns to keep context windows manageable.
@@ -26,10 +24,10 @@ type Compactor struct {
 
 func NewCompactor(store *history.Store, database *db.DB, provider llm.Provider, cfg config.CompactionConfig) *Compactor {
 	return &Compactor{
-		store:   store,
-		queries: db.New(database.Conn()),
+		store:    store,
+		queries:  db.New(database.Conn()),
 		provider: provider,
-		cfg:     cfg,
+		cfg:      cfg,
 	}
 }
 
@@ -52,7 +50,6 @@ func (c *Compactor) MaybeCompact(ctx context.Context, sessionID string) {
 		return
 	}
 
-	// Load turns to summarize (everything except the most recent KeepRecent).
 	turns, err := c.queries.GetTurnsBySession(ctx, sessionID)
 	if err != nil {
 		slog.Debug("compaction: get turns error", "session_id", sessionID, "error", err)
@@ -74,17 +71,11 @@ func (c *Compactor) MaybeCompact(ctx context.Context, sessionID string) {
 	b.WriteString("New turns to incorporate:\n")
 	for _, turn := range toSummarize {
 		fmt.Fprintf(&b, "User: %s\n", turn.UserMessage)
-		// Extract assistant text from response JSON.
-		var resp responses.Response
+		var resp llm.Response
 		if err := json.Unmarshal([]byte(turn.ResponseJson), &resp); err == nil {
 			for _, item := range resp.Output {
 				if item.Type == "message" {
-					msg := item.AsMessage()
-					for _, c := range msg.Content {
-						if c.Type == "output_text" {
-							fmt.Fprintf(&b, "Assistant: %s\n", c.AsOutputText().Text)
-						}
-					}
+					fmt.Fprintf(&b, "Assistant: %s\n", item.Content)
 				}
 			}
 		}
@@ -115,8 +106,8 @@ func (c *Compactor) MaybeCompact(ctx context.Context, sessionID string) {
 func (c *Compactor) summarize(ctx context.Context, text string) (string, error) {
 	prompt := "Summarize the following conversation concisely, preserving key facts, decisions, and context needed for continuity. Output only the summary, no preamble.\n\n" + text
 
-	input := []responses.ResponseInputItemUnionParam{
-		responses.ResponseInputItemParamOfMessage(prompt, "user"),
+	input := []llm.InputItem{
+		llm.NewMessage(prompt, llm.RoleUser),
 	}
 
 	resp, err := c.provider.ChatStream(ctx, input, nil, func(string) {})
@@ -127,12 +118,7 @@ func (c *Compactor) summarize(ctx context.Context, text string) (string, error) 
 	var summary strings.Builder
 	for _, item := range resp.Output {
 		if item.Type == "message" {
-			msg := item.AsMessage()
-			for _, c := range msg.Content {
-				if c.Type == "output_text" {
-					summary.WriteString(c.AsOutputText().Text)
-				}
-			}
+			summary.WriteString(item.Content)
 		}
 	}
 

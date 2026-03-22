@@ -9,8 +9,6 @@ import (
 	"pingu/internal/trace"
 	"sync"
 
-	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/responses"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -43,7 +41,7 @@ type SimpleRunner struct {
 	store         *history.Store
 	memory        memory.Memory
 	registry      *Registry
-	tools         []responses.ToolUnionParam
+	tools         []llm.ToolDefinition
 	systemPrompt  string
 	compactor     *memory.Compactor
 	semanticStore *memory.SemanticStore
@@ -62,17 +60,13 @@ func NewSimpleRunner(provider llm.Provider, store *history.Store, mem memory.Mem
 		opt(r)
 	}
 
-	// Build tool params list from the registry without mutating it.
-	// Tracing is applied at execution time, not here.
 	for _, t := range registry.All() {
 		schema, _ := t.InputSchema().(map[string]any)
-		r.tools = append(r.tools, responses.ToolUnionParam{
-			OfFunction: &responses.FunctionToolParam{
-				Name:        t.Name(),
-				Description: openai.String(t.Description()),
-				Parameters:  schema,
-				Strict:      openai.Bool(true),
-			},
+		r.tools = append(r.tools, llm.ToolDefinition{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  schema,
+			Strict:      true,
 		})
 	}
 
@@ -103,7 +97,7 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 		slog.Warn("failed to ensure session", "session_id", sessionID, "error", err)
 	}
 
-	var input []responses.ResponseInputItemUnionParam
+	var input []llm.InputItem
 	var err error
 	if cm, ok := r.memory.(memory.ContextualMemory); ok {
 		slog.Debug("agent: using contextual memory recall", "session_id", sessionID)
@@ -119,12 +113,12 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 	slog.Debug("agent: memory recalled", "session_id", sessionID, "history_items", len(input))
 
 	input = append(input,
-		responses.ResponseInputItemParamOfMessage(r.systemPrompt, "developer"),
-		responses.ResponseInputItemParamOfMessage(message, "user"),
+		llm.NewMessage(r.systemPrompt, llm.RoleDeveloper),
+		llm.NewMessage(message, llm.RoleUser),
 	)
 	slog.Debug("agent: input prepared", "total_items", len(input), "tools", len(r.tools))
 
-	var resp *responses.Response
+	var resp *llm.Response
 	iteration := 0
 
 	for {
@@ -144,9 +138,7 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 			"iteration", iteration,
 		)
 
-		resp, err = r.provider.ChatStream(llmCtx, input, r.tools, func(token string) {
-			// Ignore streaming text tokens; output goes through the message tool.
-		})
+		resp, err = r.provider.ChatStream(llmCtx, input, r.tools, func(token string) {})
 		if err != nil {
 			llmSpan.RecordError(err)
 			llmSpan.SetStatus(codes.Error, err.Error())
@@ -158,19 +150,18 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 		}
 
 		llmSpan.SetAttributes(
-			attribute.String("llm.model", string(resp.Model)),
-			attribute.Int64("llm.input_tokens", resp.Usage.InputTokens),
-			attribute.Int64("llm.output_tokens", resp.Usage.OutputTokens),
+			attribute.String("llm.model", resp.Model),
+			attribute.Int64("llm.input_tokens", resp.InputTokens),
+			attribute.Int64("llm.output_tokens", resp.OutputTokens),
 		)
 		llmSpan.End()
 		iteration++
 
 		// Convert output items to input items for the next iteration.
-		outputAsInput := history.OutputToInput(resp.Output)
-		input = append(input, outputAsInput...)
+		input = append(input, llm.OutputToInput(resp.Output)...)
 
 		// Collect function calls from the response.
-		var calls []responses.ResponseOutputItemUnion
+		var calls []llm.OutputItem
 		for _, item := range resp.Output {
 			if item.Type == "function_call" {
 				calls = append(calls, item)
@@ -184,28 +175,26 @@ func (r *SimpleRunner) Run(ctx context.Context, sessionID string, message string
 
 		// Execute tool calls in parallel.
 		var wg sync.WaitGroup
-		results := make([]responses.ResponseInputItemUnionParam, len(calls))
+		results := make([]llm.InputItem, len(calls))
 		for i, call := range calls {
 			wg.Add(1)
-			go func(i int, call responses.ResponseOutputItemUnion) {
+			go func(i int, call llm.OutputItem) {
 				defer wg.Done()
-				fc := call.AsFunctionCall()
-				tool, ok := r.registry.Get(fc.Name)
+				tool, ok := r.registry.Get(call.Name)
 				if !ok {
-					slog.Warn("unknown tool call", "name", fc.Name)
-					results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: unknown tool")
+					slog.Warn("unknown tool call", "name", call.Name)
+					results[i] = llm.NewFunctionCallOutput(call.CallID, "error: unknown tool")
 					return
 				}
 
-				// Use traced execution — wrap inline to preserve tracing without mutating registry.
 				traced := withTrace(tool)
-				result, execErr := traced.Execute(ctx, fc.Arguments)
+				result, execErr := traced.Execute(ctx, call.Arguments)
 				if execErr != nil {
-					slog.Warn("tool execution failed", "name", fc.Name, "error", execErr)
-					results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, "error: "+execErr.Error())
+					slog.Warn("tool execution failed", "name", call.Name, "error", execErr)
+					results[i] = llm.NewFunctionCallOutput(call.CallID, "error: "+execErr.Error())
 					return
 				}
-				results[i] = responses.ResponseInputItemParamOfFunctionCallOutput(fc.CallID, result)
+				results[i] = llm.NewFunctionCallOutput(call.CallID, result)
 			}(i, call)
 		}
 		wg.Wait()
