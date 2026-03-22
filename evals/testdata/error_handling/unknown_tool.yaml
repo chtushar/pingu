@@ -1,0 +1,28 @@
+name: unknown_tool_recovery
+description: Agent calls an unknown tool, gets error, then recovers with message tool
+user_message: "Do something"
+tools: ["message"]
+
+script:
+  # Turn 1: LLM mistakenly calls a tool that doesn't exist
+  - output:
+      - type: function_call
+        name: nonexistent_tool
+        call_id: call_1
+        arguments: '{}'
+  # Turn 2: After seeing the error, LLM uses message tool
+  - output:
+      - type: function_call
+        name: message
+        call_id: call_2
+        arguments: '{"text": "I encountered an error but recovered."}'
+  # Turn 3: Done
+  - output:
+      - type: message
+        content: ""
+
+graders:
+  - type: tool_used
+    tools: ["message"]
+  - type: contains
+    expected: "recovered"

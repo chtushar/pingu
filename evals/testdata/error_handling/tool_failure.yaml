@@ -1,0 +1,28 @@
+name: tool_failure_recovery
+description: Agent calls file tool on nonexistent path, gets error, reports to user
+user_message: "Read /nonexistent/path.txt"
+tools: ["message", "file"]
+
+script:
+  # Turn 1: LLM tries to read a nonexistent file
+  - output:
+      - type: function_call
+        name: file
+        call_id: call_1
+        arguments: '{"action": "read", "path": "/nonexistent/path.txt"}'
+  # Turn 2: After seeing the error result, LLM reports to user
+  - output:
+      - type: function_call
+        name: message
+        call_id: call_2
+        arguments: '{"text": "The file does not exist. Please check the path."}'
+  # Turn 3: Done
+  - output:
+      - type: message
+        content: ""
+
+graders:
+  - type: tool_sequence
+    tools: ["file", "message"]
+  - type: contains
+    expected: "does not exist"

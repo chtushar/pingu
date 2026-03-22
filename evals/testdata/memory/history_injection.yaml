@@ -1,0 +1,26 @@
+name: history_injection
+description: Agent has prior conversation history injected and responds accordingly
+user_message: "What was I asking about?"
+tools: ["message"]
+
+history:
+  - role: user
+    content: "Tell me about Go concurrency patterns"
+  - role: assistant
+    content: "Go provides goroutines and channels for concurrency."
+
+script:
+  - output:
+      - type: function_call
+        name: message
+        call_id: call_1
+        arguments: '{"text": "You were asking about Go concurrency patterns."}'
+  - output:
+      - type: message
+        content: ""
+
+graders:
+  - type: tool_used
+    tools: ["message"]
+  - type: contains
+    expected: "concurrency"

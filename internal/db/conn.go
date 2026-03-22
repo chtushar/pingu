@@ -62,3 +62,21 @@ func (d *DB) Conn() *sql.DB {
 func (d *DB) Close() error {
 	return d.conn.Close()
 }
+
+// OpenInMemory creates an in-memory SQLite database suitable for testing.
+func OpenInMemory() (*DB, error) {
+	conn, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		return nil, err
+	}
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA foreign_keys=ON",
+	} {
+		if _, err := conn.Exec(pragma); err != nil {
+			conn.Close()
+			return nil, err
+		}
+	}
+	return &DB{conn: conn}, nil
+}

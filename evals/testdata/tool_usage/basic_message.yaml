@@ -1,0 +1,21 @@
+name: basic_message_tool
+description: Agent uses the message tool to respond to a greeting
+user_message: "Hello, how are you?"
+tools: ["message"]
+
+script:
+  - output:
+      - type: function_call
+        name: message
+        call_id: call_1
+        arguments: '{"text": "Hello! I am doing well, thank you for asking!"}'
+  # After tool execution, LLM returns no more calls — loop ends.
+  - output:
+      - type: message
+        content: ""
+
+graders:
+  - type: tool_used
+    tools: ["message"]
+  - type: contains
+    expected: "Hello"

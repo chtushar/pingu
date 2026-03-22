@@ -1,0 +1,16 @@
+name: direct_text_response
+description: Agent responds with direct text (no message tool) — tokens should still be captured
+user_message: "Say hello"
+tools: ["message"]
+
+script:
+  # LLM returns a plain message without calling any tool
+  - output:
+      - type: message
+        content: "Hello there!"
+
+graders:
+  - type: contains
+    expected: "Hello there!"
+  - type: match
+    expected: "Hello there!"

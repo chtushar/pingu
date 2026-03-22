@@ -1,0 +1,30 @@
+name: multi_tool_chain
+description: Agent chains shell then message tools in sequence
+user_message: "List the files in the current directory"
+tools: ["message", "shell"]
+
+script:
+  # Turn 1: LLM decides to run shell command
+  - output:
+      - type: function_call
+        name: shell
+        call_id: call_1
+        arguments: '{"command": "echo file1.txt file2.txt"}'
+  # Turn 2: LLM sees shell output, sends message to user
+  - output:
+      - type: function_call
+        name: message
+        call_id: call_2
+        arguments: '{"text": "Here are the files: file1.txt file2.txt"}'
+  # Turn 3: No more calls
+  - output:
+      - type: message
+        content: ""
+
+graders:
+  - type: tool_used
+    tools: ["shell", "message"]
+  - type: tool_sequence
+    tools: ["shell", "message"]
+  - type: contains
+    expected: "file1.txt"
