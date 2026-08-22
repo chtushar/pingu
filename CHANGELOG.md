@@ -6,6 +6,15 @@ All notable changes to pingu are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-08-22
+
+### Fixed
+
+- Release packaging: `cmd/` was accidentally excluded from the v0.1.0 tag by
+  a `.gitignore` pattern that matched any path named `pingu`; the pattern is
+  now anchored to the repository root (`/pingu`). v0.1.0 remains published
+  but broken for `go install`; use v0.1.1.
+
 ## [0.1.0] — 2026-08-22
 
 First usable release: the core loop and CLI.
@@ -35,5 +44,6 @@ First usable release: the core loop and CLI.
 - CI (GitHub Actions) covering build, tests, race tests, vet, and
   formatting on Linux and macOS.
 
-[Unreleased]: https://github.com/chtushar/pingu/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/chtushar/pingu/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/chtushar/pingu/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/chtushar/pingu/releases/tag/v0.1.0
